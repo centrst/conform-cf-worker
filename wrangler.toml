@@ -1,18 +1,15 @@
 name = "conform-cf-worker"
 main = "src/index.ts"
 compatibility_date = "2026-07-21"
+keep_vars = true
 
-# Verified destinations are free. Change DELIVERY_MODE to "arbitrary" after
-# onboarding a domain to Cloudflare Email Sending.
-[vars]
-DELIVERY_MODE = "verified"
-MONTHLY_LIMIT = "250"
-MAX_REQUEST_SIZE = "102400"
-FROM_EMAIL = "forms@example.com"
-FROM_NAME = "Conform"
-PUBLIC_URL = "https://forms.example.com"
-SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
-SOURCE_COMMIT = "development"
+# Runtime variables are intentionally not declared here. This prevents an
+# upstream Git deployment from replacing values configured in the Cloudflare
+# dashboard with example values. Self-hosters should add the [vars] block from
+# README.md to their fork before deploying.
+
+[secrets]
+required = ["ROUTE_TOKEN_SECRET", "OWNER_HASH_SECRET"]
 
 [[send_email]]
 name = "EMAIL"
