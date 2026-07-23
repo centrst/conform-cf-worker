@@ -195,6 +195,19 @@ There is no KV namespace or database to create manually.
 Set `MONTHLY_LIMIT = "0"` for unlimited delivery. This skips quota writes; the
 route Durable Object remains because it resolves each short form ID.
 
+## Centrst hosted deployment
+
+The hosted service uses `wrangler.centrst.toml`, which contains its Worker name
+and scoped routes but intentionally contains no runtime values. Its Cloudflare
+Git deploy command is:
+
+```sh
+npx wrangler versions upload --config wrangler.centrst.toml
+```
+
+Runtime values and secrets are managed in the `centrst-conform-worker`
+dashboard. Do not use the generic `wrangler.toml` for this deployment.
+
 ## Create a form
 
 ```sh
