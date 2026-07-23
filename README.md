@@ -198,8 +198,9 @@ route Durable Object remains because it resolves each short form ID.
 ## Centrst hosted deployment
 
 The hosted service uses `wrangler.centrst.toml`, which contains its Worker name
-and scoped routes but intentionally contains no runtime values. Its Cloudflare
-Git deploy command is:
+and Custom Domain but intentionally contains no runtime values. The Custom
+Domain makes Cloudflare issue and manage the certificate for the multi-level
+`api.conform.centrst.com` hostname. Its Cloudflare Git deploy command is:
 
 ```sh
 npx wrangler versions upload --config wrangler.centrst.toml

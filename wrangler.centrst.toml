@@ -15,12 +15,8 @@ required = [
 ]
 
 [[routes]]
-pattern = "api.conform.centrst.com/v1/*"
-zone_name = "centrst.com"
-
-[[routes]]
-pattern = "api.conform.centrst.com/f/*"
-zone_name = "centrst.com"
+pattern = "api.conform.centrst.com"
+custom_domain = true
 
 [[send_email]]
 name = "EMAIL"
