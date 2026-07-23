@@ -1,4 +1,4 @@
-name = "conform-cf-worker"
+name = "centrst-conform-worker"
 main = "src/index.ts"
 compatibility_date = "2026-07-21"
 
