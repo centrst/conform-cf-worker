@@ -1,2 +1,268 @@
 # conform-cf-worker
-Open-source Cloudflare Worker for private form-to-email delivery
+
+The open-source Cloudflare Worker that receives a form and delivers its fields
+to a verified inbox. Hosted Conform and self-hosted Conform use this same
+delivery engine.
+
+Source: <https://github.com/centrst/conform-cf-worker>
+
+## The model
+
+A form has two different names:
+
+- **Alias** — a customer-controlled label such as `Contact` or `Website`.
+  Aliases are not unique. One inbox can have any number of forms with the same
+  alias.
+- **Form ID** — a random 80-bit identifier such as
+  `cfm_7K4P9X2M8RWD3JNH`. This is the permanent public identity used in the
+  form endpoint.
+
+The normal flow is:
+
+1. The owner enters an inbox and an alias.
+2. Conform generates the form ID and encrypts the routing destination.
+3. In the default `verified` mode, Cloudflare emails the owner to verify the
+   destination inbox.
+4. The form posts to `https://forms.example.com/f/cfm_…`.
+5. The Worker atomically reserves one unit from that inbox's shared monthly
+   allowance.
+6. When allowed, the Worker decrypts the destination in memory, turns the
+   fields into a plain-text email, optionally attaches `submission.json`, and
+   sends it through Cloudflare Email Service.
+7. Conform does not create a submission history.
+
+Every form targeting the same normalized inbox shares one allowance, regardless
+of its alias. A failed email send rolls its quota reservation back. Once the
+allowance is exhausted, the Worker rejects the submission before calling the
+email provider.
+
+## The storage boundary
+
+This Worker does not use Workers KV, D1, or an external database. It creates two
+SQLite-backed Durable Object namespaces from `wrangler.toml`:
+
+### Form route storage
+
+One tiny record per form:
+
+```text
+form ID
+alias
+opaque inbox ID
+encrypted routing destination
+verification status
+Cloudflare destination ID
+creation timestamp
+```
+
+The destination is encrypted with AES-GCM before it is written. The opaque inbox
+ID is an HMAC of the normalized destination email. It lets forms for the same
+inbox share quota without using the email as a database key.
+
+The only customer-authored value stored in plaintext is the alias. The
+destination email is not stored in plaintext in the route or quota Durable
+Objects.
+
+### Quota storage
+
+One row per active inbox-month:
+
+```text
+UTC month
+used count
+limit
+```
+
+The Durable Object itself is addressed by the opaque inbox ID.
+
+### Data processed elsewhere
+
+| Data | Conform Durable Objects | Cloudflare Email Service | Destination mailbox |
+| --- | --- | --- | --- |
+| Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
+| Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
+| Alias | Stored with the route | Included when building the email | Included in the email |
+| Quota | Opaque ID, month, count and limit | Not included in the delivered email | Not sent |
+
+No hosted service can honestly promise that its operator is technically unable
+to inspect plaintext processed by infrastructure the operator controls.
+Self-hosting this Worker removes Centrst from the path. End-to-end encrypted
+capture is a separate mode because encryption must happen in the visitor's
+browser before submission.
+
+## Delivery modes
+
+### `verified` — default
+
+Cloudflare stores and verifies each destination inbox. Delivery to verified
+destinations is free and does not consume Cloudflare Email Service sending
+quota. Cloudflare currently allows 200 destination addresses per account by
+default, with a limit-increase request available.
+
+Required configuration:
+
+- Email Routing enabled for the sender domain
+- An API token with `Email Routing Addresses Write`
+- `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
+- The included registration rate-limit binding, which receives only opaque HMAC
+  keys and protects the destination-address allowance from automated exhaustion
+
+Pending routes become active when the landing page checks
+`GET /v1/routes/:form_id` after Cloudflare verification. The public form URL
+never changes.
+
+### `arbitrary`
+
+Set `DELIVERY_MODE = "arbitrary"` after onboarding the sender domain to
+Cloudflare Email Sending. New inboxes receive a Conform confirmation email, and
+the route activates only after confirmation.
+
+This uses the same `EMAIL` binding, form IDs, route records and quota system.
+Existing verified routes continue working; switching modes does not migrate or
+rewrite them. Arbitrary-recipient sends use Cloudflare's outbound-email
+allowance and then its per-email pricing.
+
+## Deploy it yourself
+
+Prerequisites:
+
+- Node.js 20 or newer with Corepack
+- A Cloudflare account
+- A domain on Cloudflare DNS
+
+```sh
+git clone https://github.com/centrst/conform-cf-worker.git
+cd conform-cf-worker
+corepack yarn install
+```
+
+Generate two independent 32-byte secrets:
+
+```sh
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+Store them:
+
+```sh
+npx wrangler secret put ROUTE_TOKEN_SECRET
+npx wrangler secret put OWNER_HASH_SECRET
+```
+
+For verified mode:
+
+```sh
+npx wrangler secret put CLOUDFLARE_API_TOKEN
+```
+
+Set `CLOUDFLARE_ACCOUNT_ID`, `FROM_EMAIL`, `PUBLIC_URL`, and the desired
+`MONTHLY_LIMIT` in `wrangler.toml`. The sender must belong to a domain configured
+for Cloudflare Email Routing or Email Sending. Change the example rate-limit
+`namespace_id` if that integer is already used in your account.
+
+Deploy:
+
+```sh
+corepack yarn verify
+npx wrangler deploy
+```
+
+Wrangler creates the route and quota Durable Object namespaces automatically.
+There is no KV namespace or database to create manually.
+
+Set `MONTHLY_LIMIT = "0"` for unlimited delivery. This skips quota writes; the
+route Durable Object remains because it resolves each short form ID.
+
+## Create a form
+
+```sh
+curl https://forms.example.com/v1/routes \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"email":"owner@example.com","alias":"Contact"}'
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "status": "pending_verification",
+  "form_id": "cfm_7K4P9X2M8RWD3JNH",
+  "alias": "Contact",
+  "endpoint": "https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH",
+  "message": "Check your inbox for Cloudflare’s verification email."
+}
+```
+
+The endpoint is stable while verification is pending. Check status:
+
+```sh
+curl https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH
+```
+
+Use the endpoint directly:
+
+```html
+<form action="https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH" method="post">
+  <input name="email" type="email" required>
+  <textarea name="message" required></textarea>
+  <button type="submit">Send</button>
+</form>
+```
+
+Reserved optional fields:
+
+| Field | Purpose |
+| --- | --- |
+| `_subject` or `subject` | Email subject |
+| `_format=json` or `format=json` | Attach the fields as `submission.json` |
+| `_gotcha` or `botcheck` | Honeypot; a non-empty value is silently discarded |
+
+JSON, URL-encoded, and multipart text fields are accepted. File uploads are
+rejected. The default request-body limit is 100 KiB.
+
+## Monthly quota implementation
+
+The quota is not a log and does not use `COUNT(*)`.
+
+Each normalized inbox maps to one Durable Object through its opaque HMAC owner
+identifier. A successful reservation performs one atomic SQLite upsert:
+
+```sql
+INSERT INTO usage (month, used, limit_count)
+SELECT ?1, 1, ?2
+WHERE ?2 > 0
+ON CONFLICT(month) DO UPDATE SET
+  used = usage.used + 1,
+  limit_count = excluded.limit_count
+WHERE usage.used < excluded.limit_count
+RETURNING used, limit_count;
+```
+
+A returned row allows delivery. No returned row means the allowance is already
+full. There is one row per active inbox-month, not one row per submission.
+
+## Existing hosted Conform
+
+This Worker must never bind the existing Conform KV namespaces.
+
+During migration:
+
+1. Keep legacy `/submit` on the existing Worker.
+2. Route new `/v1/routes/*` and `/f/*` traffic to this Worker.
+3. Verify the new flow without changing either existing client.
+4. Migrate each existing client's form action to a generated `cfm_…` endpoint.
+5. Leave the legacy KV data untouched until a separate retention decision is
+   made.
+
+## Development
+
+```sh
+corepack yarn typecheck
+corepack yarn test
+npx wrangler deploy --dry-run
+```
+
+The repository is MIT licensed.

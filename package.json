@@ -1,0 +1,29 @@
+{
+  "name": "conform-cf-worker",
+  "version": "0.1.0",
+  "description": "Open-source Cloudflare Worker for private form-to-email delivery",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "verify": "yarn typecheck && yarn test && wrangler deploy --dry-run"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "email",
+    "forms",
+    "privacy"
+  ],
+  "license": "MIT",
+  "packageManager": "yarn@4.5.0",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260113.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.7",
+    "wrangler": "^4.43.0"
+  }
+}

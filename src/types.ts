@@ -1,0 +1,92 @@
+export type DeliveryMode = 'verified' | 'arbitrary';
+
+export interface EmailAttachment {
+  content: string;
+  filename: string;
+  type: string;
+  disposition: 'attachment';
+}
+
+export interface EmailMessageBuilder {
+  to: string | string[];
+  from: string | { email: string; name?: string };
+  replyTo?: string | { email: string; name?: string };
+  subject: string;
+  text: string;
+  html?: string;
+  attachments?: EmailAttachment[];
+}
+
+export interface EmailSendResult {
+  messageId: string;
+}
+
+export interface EmailSender {
+  send(message: EmailMessageBuilder): Promise<EmailSendResult>;
+}
+
+export interface RateLimiter {
+  limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
+export interface Env {
+  EMAIL: EmailSender;
+  QUOTAS?: DurableObjectNamespace;
+  ROUTES: DurableObjectNamespace;
+  REGISTRATION_RATE_LIMITER?: RateLimiter;
+
+  DELIVERY_MODE?: DeliveryMode;
+  MONTHLY_LIMIT?: string;
+  MAX_REQUEST_SIZE?: string;
+  FROM_EMAIL?: string;
+  FROM_NAME?: string;
+  PUBLIC_URL?: string;
+  SOURCE_URL?: string;
+  SOURCE_COMMIT?: string;
+
+  ROUTE_TOKEN_SECRET?: string;
+  OWNER_HASH_SECRET?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
+  CLOUDFLARE_API_TOKEN?: string;
+}
+
+export interface RouteTokenPayload {
+  kind: 'route';
+  version: 1;
+  ownerId: string;
+  routeId: string;
+  email: string;
+  formName: string;
+  issuedAt: number;
+}
+
+export interface PendingRoutePayload {
+  kind: 'pending';
+  version: 1;
+  ownerId: string;
+  routeId: string;
+  email: string;
+  formName: string;
+  issuedAt: number;
+  expiresAt: number;
+}
+
+export interface QuotaReservation {
+  allowed: boolean;
+  used: number;
+  limit: number;
+  month: string;
+}
+
+export type SubmissionValue = string | string[];
+export type SubmissionFields = Record<string, SubmissionValue>;
+
+export interface StoredRouteRecord {
+  formId: string;
+  alias: string;
+  ownerId: string;
+  encryptedRoute: string;
+  status: 'pending' | 'active';
+  destinationId?: string;
+  createdAt: string;
+}

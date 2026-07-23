@@ -1,0 +1,6 @@
+.dev.vars
+.yarn/install-state.gz
+.wrangler/
+coverage/
+dist/
+node_modules/
