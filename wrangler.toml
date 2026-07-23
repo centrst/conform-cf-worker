@@ -1,0 +1,44 @@
+name = "conform-cf-worker"
+main = "src/index.ts"
+compatibility_date = "2026-07-21"
+
+# Verified destinations are free. Change DELIVERY_MODE to "arbitrary" after
+# onboarding a domain to Cloudflare Email Sending.
+[vars]
+DELIVERY_MODE = "verified"
+MONTHLY_LIMIT = "250"
+MAX_REQUEST_SIZE = "102400"
+FROM_EMAIL = "forms@example.com"
+FROM_NAME = "Conform"
+PUBLIC_URL = "https://forms.example.com"
+SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
+SOURCE_COMMIT = "development"
+
+[[send_email]]
+name = "EMAIL"
+
+# Change namespace_id if 17001 is already used by another rate-limit binding in
+# your Cloudflare account. Counters are ephemeral and receive only opaque HMAC
+# keys, never raw IP or email values.
+[[ratelimits]]
+name = "REGISTRATION_RATE_LIMITER"
+namespace_id = "17001"
+
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[durable_objects.bindings]]
+name = "QUOTAS"
+class_name = "InboxQuota"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InboxQuota"]
+
+# Hosted Conform can bind its existing ACCESS_KEYS namespace here during
+# migration. The Worker reads legacy records but never deletes or rewrites them.
+#
+# [[kv_namespaces]]
+# binding = "LEGACY_ACCESS_KEYS"
+# id = "replace-with-existing-namespace-id"
