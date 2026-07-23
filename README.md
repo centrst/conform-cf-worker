@@ -156,10 +156,31 @@ For verified mode:
 npx wrangler secret put CLOUDFLARE_API_TOKEN
 ```
 
-Set `CLOUDFLARE_ACCOUNT_ID`, `FROM_EMAIL`, `PUBLIC_URL`, and the desired
-`MONTHLY_LIMIT` in `wrangler.toml`. The sender must belong to a domain configured
-for Cloudflare Email Routing or Email Sending. Change the example rate-limit
-`namespace_id` if that integer is already used in your account.
+Add your runtime configuration to `wrangler.toml`:
+
+```toml
+# Verified destinations are free. Change DELIVERY_MODE to "arbitrary" after
+# onboarding a domain to Cloudflare Email Sending.
+[vars]
+DELIVERY_MODE = "verified"
+MONTHLY_LIMIT = "250"
+MAX_REQUEST_SIZE = "102400"
+FROM_EMAIL = "forms@example.com"
+FROM_NAME = "Conform"
+PUBLIC_URL = "https://forms.example.com"
+SOURCE_URL = "https://github.com/your-org/conform-cf-worker"
+SOURCE_COMMIT = "self-hosted"
+CLOUDFLARE_ACCOUNT_ID = "your-account-id"
+```
+
+Replace the example sender, public URL, source URL, and Cloudflare account ID.
+The sender must belong to a domain configured for Cloudflare Email Routing or
+Email Sending. Change the example rate-limit `namespace_id` if that integer is
+already used in your account.
+
+If you manage runtime variables in the Cloudflare dashboard instead, leave
+`[vars]` out of `wrangler.toml`. The committed `keep_vars = true` setting keeps
+those dashboard values intact on later deploys.
 
 Deploy:
 
@@ -173,6 +194,19 @@ There is no KV namespace or database to create manually.
 
 Set `MONTHLY_LIMIT = "0"` for unlimited delivery. This skips quota writes; the
 route Durable Object remains because it resolves each short form ID.
+
+## Centrst hosted deployment
+
+The hosted service uses `wrangler.centrst.toml`, which contains its Worker name
+and scoped routes but intentionally contains no runtime values. Its Cloudflare
+Git deploy command is:
+
+```sh
+npx wrangler versions upload --config wrangler.centrst.toml
+```
+
+Runtime values and secrets are managed in the `centrst-conform-worker`
+dashboard. Do not use the generic `wrangler.toml` for this deployment.
 
 ## Create a form
 

@@ -1,0 +1,50 @@
+name = "centrst-conform-worker"
+main = "src/index.ts"
+compatibility_date = "2026-07-21"
+keep_vars = true
+workers_dev = false
+
+# Centrst manages runtime values in the Cloudflare dashboard. Do not add a
+# [vars] block here: Git deployments must preserve those configured values.
+
+[secrets]
+required = [
+  "ROUTE_TOKEN_SECRET",
+  "OWNER_HASH_SECRET",
+  "CLOUDFLARE_API_TOKEN",
+]
+
+[[routes]]
+pattern = "api.conform.centrst.com/v1/*"
+zone_name = "centrst.com"
+
+[[routes]]
+pattern = "api.conform.centrst.com/f/*"
+zone_name = "centrst.com"
+
+[[send_email]]
+name = "EMAIL"
+
+[[ratelimits]]
+name = "REGISTRATION_RATE_LIMITER"
+namespace_id = "17001"
+
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[durable_objects.bindings]]
+name = "QUOTAS"
+class_name = "InboxQuota"
+
+[[durable_objects.bindings]]
+name = "ROUTES"
+class_name = "FormRoute"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InboxQuota"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FormRoute"]
