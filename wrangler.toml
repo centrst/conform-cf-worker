@@ -32,13 +32,14 @@ period = 60
 name = "QUOTAS"
 class_name = "InboxQuota"
 
+[[durable_objects.bindings]]
+name = "ROUTES"
+class_name = "FormRoute"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["InboxQuota"]
 
-# Hosted Conform can bind its existing ACCESS_KEYS namespace here during
-# migration. The Worker reads legacy records but never deletes or rewrites them.
-#
-# [[kv_namespaces]]
-# binding = "LEGACY_ACCESS_KEYS"
-# id = "replace-with-existing-namespace-id"
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FormRoute"]

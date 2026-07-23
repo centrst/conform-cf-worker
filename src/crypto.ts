@@ -3,6 +3,7 @@ import type { PendingRoutePayload, RouteTokenPayload } from './types';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const TOKEN_PREFIX = 'cf1';
+const FORM_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = '';
@@ -142,5 +143,14 @@ export async function openToken<T extends RouteTokenPayload | PendingRoutePayloa
 }
 
 export function randomRouteId(): string {
-  return base64UrlEncode(crypto.getRandomValues(new Uint8Array(16)));
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  let formId = 'cfm_';
+  for (const byte of bytes) {
+    formId += FORM_ID_ALPHABET[byte & 31];
+  }
+  return formId;
+}
+
+export function isValidFormId(value: string): boolean {
+  return /^cfm_[A-HJ-NP-Z2-9]{16}$/u.test(value);
 }

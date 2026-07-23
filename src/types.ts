@@ -32,7 +32,7 @@ export interface RateLimiter {
 export interface Env {
   EMAIL: EmailSender;
   QUOTAS?: DurableObjectNamespace;
-  LEGACY_ACCESS_KEYS?: KVNamespace;
+  ROUTES: DurableObjectNamespace;
   REGISTRATION_RATE_LIMITER?: RateLimiter;
 
   DELIVERY_MODE?: DeliveryMode;
@@ -71,12 +71,6 @@ export interface PendingRoutePayload {
   expiresAt: number;
 }
 
-export interface LegacyAccessKeyData {
-  email: string;
-  form_name?: string;
-  created_at?: string;
-}
-
 export interface QuotaReservation {
   allowed: boolean;
   used: number;
@@ -86,3 +80,13 @@ export interface QuotaReservation {
 
 export type SubmissionValue = string | string[];
 export type SubmissionFields = Record<string, SubmissionValue>;
+
+export interface StoredRouteRecord {
+  formId: string;
+  alias: string;
+  ownerId: string;
+  encryptedRoute: string;
+  status: 'pending' | 'active';
+  destinationId?: string;
+  createdAt: string;
+}

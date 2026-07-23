@@ -94,3 +94,24 @@ export async function ensureDestinationAddress(
     addressId: body.result.id,
   };
 }
+
+export async function destinationAddressStatus(
+  addressId: string,
+  accountId?: string,
+  apiToken?: string,
+  fetcher: typeof fetch = fetch,
+): Promise<DestinationStatus> {
+  const [account, token] = configuration(accountId, apiToken);
+  const response = await fetcher(
+    `https://api.cloudflare.com/client/v4/accounts/${account}/email/routing/addresses/${encodeURIComponent(addressId)}`,
+    { headers: apiHeaders(token) },
+  );
+  const body = (await response.json()) as CloudflareApiResponse<CloudflareAddress>;
+  if (!response.ok || !body.success || !body.result) {
+    throw new Error('Cloudflare destination status lookup failed');
+  }
+  return {
+    status: body.result.verified ? 'verified' : 'pending',
+    addressId: body.result.id ?? addressId,
+  };
+}

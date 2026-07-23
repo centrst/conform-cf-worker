@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ensureDestinationAddress } from './cloudflare-destinations';
+import {
+  destinationAddressStatus,
+  ensureDestinationAddress,
+} from './cloudflare-destinations';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -63,5 +66,36 @@ describe('verified destination registration', () => {
       method: 'POST',
       body: JSON.stringify({ email: 'owner@example.com' }),
     });
+  });
+
+  it('refreshes a destination by its Cloudflare address id', async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({
+        success: true,
+        result: {
+          id: 'destination-id',
+          email: 'owner@example.com',
+          verified: '2026-07-23T00:00:00Z',
+        },
+      }),
+    );
+
+    const result = await destinationAddressStatus(
+      'destination-id',
+      'account',
+      'token',
+      fetchMock as typeof fetch,
+    );
+
+    expect(result).toEqual({ status: 'verified', addressId: 'destination-id' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.cloudflare.com/client/v4/accounts/account/email/routing/addresses/destination-id',
+      {
+        headers: {
+          Authorization: 'Bearer token',
+          'Content-Type': 'application/json',
+        },
+      },
+    );
   });
 });

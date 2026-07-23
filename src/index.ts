@@ -1,9 +1,11 @@
 import {
   DestinationCapacityError,
+  destinationAddressStatus,
   ensureDestinationAddress,
 } from './cloudflare-destinations';
 import {
   isValidEmail,
+  isValidFormId,
   normalizeEmail,
   openToken,
   ownerIdForEmail,
@@ -17,16 +19,22 @@ import {
   submissionEndpoint,
 } from './email';
 import { InboxQuota, reserveQuota, rollbackQuota } from './quota';
+import {
+  activateStoredRoute,
+  createStoredRoute,
+  FormRoute,
+  getStoredRoute,
+} from './routes';
 import { parseSubmission } from './submission';
 import type {
   DeliveryMode,
   Env,
-  LegacyAccessKeyData,
   PendingRoutePayload,
   RouteTokenPayload,
+  StoredRouteRecord,
 } from './types';
 
-export { InboxQuota };
+export { FormRoute, InboxQuota };
 export { openToken, ownerIdForEmail, sealToken } from './crypto';
 
 const ROUTE_TOKEN_TTL_SECONDS = 24 * 60 * 60;
@@ -74,8 +82,13 @@ function routePayload(
   };
 }
 
-async function parseRouteRequest(request: Request): Promise<{ email: string; formName: string }> {
-  let body: { email?: unknown; formName?: unknown; form_name?: unknown };
+async function parseRouteRequest(request: Request): Promise<{ email: string; alias: string }> {
+  let body: {
+    email?: unknown;
+    alias?: unknown;
+    formName?: unknown;
+    form_name?: unknown;
+  };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -85,7 +98,7 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; for
   if (typeof body.email !== 'string' || !isValidEmail(normalizeEmail(body.email))) {
     throw new Response('A valid email address is required', { status: 400 });
   }
-  const rawFormName = body.formName ?? body.form_name;
+  const rawFormName = body.alias ?? body.formName ?? body.form_name;
   if (
     typeof rawFormName !== 'string' ||
     !rawFormName.trim() ||
@@ -95,11 +108,36 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; for
       status: 400,
     });
   }
-  return { email: normalizeEmail(body.email), formName: rawFormName.trim() };
+  return { email: normalizeEmail(body.email), alias: rawFormName.trim() };
+}
+
+async function storeNewRoute(
+  env: Env,
+  email: string,
+  alias: string,
+  ownerId: string,
+  status: StoredRouteRecord['status'],
+  destinationId?: string,
+): Promise<{ route: RouteTokenPayload; record: StoredRouteRecord }> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const formId = randomRouteId();
+    const route = routePayload(email, alias, ownerId, formId);
+    const record: StoredRouteRecord = {
+      formId,
+      alias,
+      ownerId,
+      encryptedRoute: await sealToken(route, env.ROUTE_TOKEN_SECRET),
+      status,
+      destinationId,
+      createdAt: new Date().toISOString(),
+    };
+    if (await createStoredRoute(env, record)) return { route, record };
+  }
+  throw new Error('Could not allocate a unique form ID');
 }
 
 async function createRoute(request: Request, env: Env): Promise<Response> {
-  const { email, formName } = await parseRouteRequest(request);
+  const { email, alias } = await parseRouteRequest(request);
   const ownerId = await ownerIdForEmail(email, env.OWNER_HASH_SECRET);
   if (env.REGISTRATION_RATE_LIMITER) {
     const clientAddress = request.headers.get('cf-connecting-ip') || 'unknown';
@@ -121,7 +159,6 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       );
     }
   }
-  const route = routePayload(email, formName, ownerId);
   const origin = new URL(request.url).origin;
 
   if (deliveryMode(env) === 'verified') {
@@ -147,13 +184,22 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       throw error;
     }
 
-    const token = await sealToken(route, env.ROUTE_TOKEN_SECRET);
+    const status = destination.status === 'verified' ? 'active' : 'pending';
+    const { record } = await storeNewRoute(
+      env,
+      email,
+      alias,
+      ownerId,
+      status,
+      destination.addressId,
+    );
     return json(
       {
         success: true,
-        status: destination.status === 'verified' ? 'active' : 'pending_verification',
-        endpoint: submissionEndpoint(env, origin, token),
-        form_name: formName,
+        status: status === 'active' ? 'active' : 'pending_verification',
+        form_id: record.formId,
+        alias,
+        endpoint: submissionEndpoint(env, origin, record.formId),
         message:
           destination.status === 'verified'
             ? 'Your form endpoint is ready.'
@@ -164,6 +210,8 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
   }
 
   const now = Date.now();
+  const formId = randomRouteId();
+  const route = routePayload(email, alias, ownerId, formId);
   const pending: PendingRoutePayload = {
     ...route,
     kind: 'pending',
@@ -172,11 +220,24 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
   };
   const pendingToken = await sealToken(pending, env.ROUTE_TOKEN_SECRET);
   await sendArbitraryVerification(env, pending, pendingToken, origin);
+  const record: StoredRouteRecord = {
+    formId,
+    alias,
+    ownerId,
+    encryptedRoute: await sealToken(route, env.ROUTE_TOKEN_SECRET),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+  if (!(await createStoredRoute(env, record))) {
+    throw new Error('Could not allocate a unique form ID');
+  }
   return json(
     {
       success: true,
       status: 'pending_verification',
-      form_name: formName,
+      form_id: formId,
+      alias,
+      endpoint: submissionEndpoint(env, origin, formId),
       message: 'Check your inbox to confirm this form.',
     },
     202,
@@ -246,39 +307,74 @@ async function verifyArbitraryRoute(request: Request, env: Env): Promise<Respons
   if (pending.expiresAt < Date.now()) {
     return json({ success: false, message: 'Verification token has expired' }, 410);
   }
-  const route = routePayload(
-    pending.email,
-    pending.formName,
-    pending.ownerId,
-    pending.routeId,
+  if (!isValidFormId(pending.routeId)) {
+    return json({ success: false, message: 'Invalid form ID' }, 400);
+  }
+  const stored = await getStoredRoute(env, pending.routeId);
+  if (!stored) return json({ success: false, message: 'Form route not found' }, 404);
+  const route = await openToken<RouteTokenPayload>(
+    stored.encryptedRoute,
+    'route',
+    env.ROUTE_TOKEN_SECRET,
   );
-  const routeToken = await sealToken(route, env.ROUTE_TOKEN_SECRET);
+  if (
+    route.routeId !== pending.routeId ||
+    route.ownerId !== pending.ownerId ||
+    route.email !== pending.email ||
+    route.formName !== pending.formName
+  ) {
+    return json({ success: false, message: 'Verification does not match this route' }, 409);
+  }
+  const activated = await activateStoredRoute(env, pending.routeId);
+  if (!activated) return json({ success: false, message: 'Form route not found' }, 404);
   return json({
     success: true,
     status: 'active',
-    endpoint: submissionEndpoint(env, new URL(request.url).origin, routeToken),
-    form_name: route.formName,
+    form_id: activated.formId,
+    alias: activated.alias,
+    endpoint: submissionEndpoint(env, new URL(request.url).origin, activated.formId),
     message: 'Your form endpoint is ready.',
   });
 }
 
-async function resolveLegacyRoute(
-  accessKey: string | undefined,
+async function refreshVerifiedRoute(
   env: Env,
-): Promise<RouteTokenPayload | null> {
-  if (!accessKey || !env.LEGACY_ACCESS_KEYS) return null;
-  const legacy = (await env.LEGACY_ACCESS_KEYS.get(
-    accessKey,
-    'json',
-  )) as LegacyAccessKeyData | null;
-  if (!legacy?.email || !isValidEmail(normalizeEmail(legacy.email))) return null;
-  const email = normalizeEmail(legacy.email);
-  return routePayload(
-    email,
-    legacy.form_name?.trim() || 'Conform form',
-    await ownerIdForEmail(email, env.OWNER_HASH_SECRET),
-    `legacy-${accessKey.slice(0, 16)}`,
+  record: StoredRouteRecord,
+): Promise<StoredRouteRecord> {
+  if (
+    record.status === 'active' ||
+    deliveryMode(env) !== 'verified' ||
+    !record.destinationId
+  ) {
+    return record;
+  }
+  const destination = await destinationAddressStatus(
+    record.destinationId,
+    env.CLOUDFLARE_ACCOUNT_ID,
+    env.CLOUDFLARE_API_TOKEN,
   );
+  if (destination.status !== 'verified') return record;
+  return (await activateStoredRoute(env, record.formId)) ?? record;
+}
+
+async function routeStatus(
+  request: Request,
+  env: Env,
+  formId: string,
+): Promise<Response> {
+  if (!isValidFormId(formId)) {
+    return json({ success: false, message: 'Form route not found' }, 404);
+  }
+  const found = await getStoredRoute(env, formId);
+  if (!found) return json({ success: false, message: 'Form route not found' }, 404);
+  const record = await refreshVerifiedRoute(env, found);
+  return json({
+    success: true,
+    status: record.status === 'active' ? 'active' : 'pending_verification',
+    form_id: record.formId,
+    alias: record.alias,
+    endpoint: submissionEndpoint(env, new URL(request.url).origin, record.formId),
+  });
 }
 
 function thresholdCrossed(used: number, limit: number): boolean {
@@ -290,7 +386,7 @@ async function submit(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
-  token?: string,
+  formId: string,
 ): Promise<Response> {
   const parsed = await parseSubmission(request, maxRequestSize(env));
   if (parsed.spam) return json({ success: true, message: 'Submission received' });
@@ -298,15 +394,33 @@ async function submit(
     return json({ success: false, message: 'Form data is required' }, 400);
   }
 
-  let route: RouteTokenPayload;
-  if (token) {
-    route = await openToken<RouteTokenPayload>(token, 'route', env.ROUTE_TOKEN_SECRET);
-  } else {
-    const rawAccessKey = parsed.allFields.access_key;
-    const accessKey = Array.isArray(rawAccessKey) ? rawAccessKey[0] : rawAccessKey;
-    const legacy = await resolveLegacyRoute(accessKey, env);
-    if (!legacy) return json({ success: false, message: 'Invalid access key' }, 401);
-    route = legacy;
+  if (!isValidFormId(formId)) {
+    return json({ success: false, message: 'Form route not found' }, 404);
+  }
+  const found = await getStoredRoute(env, formId);
+  if (!found) return json({ success: false, message: 'Form route not found' }, 404);
+  const record = await refreshVerifiedRoute(env, found);
+  if (record.status !== 'active') {
+    return json(
+      {
+        success: false,
+        error: 'inbox_not_verified',
+        message: 'This inbox has not been verified yet.',
+      },
+      409,
+    );
+  }
+  const route = await openToken<RouteTokenPayload>(
+    record.encryptedRoute,
+    'route',
+    env.ROUTE_TOKEN_SECRET,
+  );
+  if (
+    route.routeId !== record.formId ||
+    route.ownerId !== record.ownerId ||
+    route.formName !== record.alias
+  ) {
+    throw new Error('Stored route metadata does not match its encrypted payload');
   }
 
   const reservation = await reserveQuota(env, route.ownerId, monthlyLimit(env));
@@ -378,9 +492,17 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
       delivery_mode: deliveryMode(env),
       persistence: {
         submission_fields: false,
-        new_route_destination_email_in_quota_or_route_storage: false,
-        legacy_destination_records: env.LEGACY_ACCESS_KEYS ? 'read_only' : 'not_bound',
+        destination_email_plaintext: false,
+        route: [
+          'form id',
+          'alias',
+          'opaque inbox id',
+          'encrypted destination',
+          'verification status',
+          'Cloudflare destination id',
+        ],
         quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
+        workers_kv: false,
       },
     });
   }
@@ -399,13 +521,14 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
     return verifyArbitraryRoute(request, env);
   }
 
-  if (request.method === 'POST' && url.pathname.startsWith('/f/')) {
-    const token = decodeURIComponent(url.pathname.slice('/f/'.length));
-    return submit(request, env, ctx, token);
+  if (request.method === 'GET' && url.pathname.startsWith('/v1/routes/')) {
+    const formId = decodeURIComponent(url.pathname.slice('/v1/routes/'.length));
+    return routeStatus(request, env, formId);
   }
 
-  if (request.method === 'POST' && url.pathname === '/submit') {
-    return submit(request, env, ctx);
+  if (request.method === 'POST' && url.pathname.startsWith('/f/')) {
+    const formId = decodeURIComponent(url.pathname.slice('/f/'.length));
+    return submit(request, env, ctx, formId);
   }
 
   return json({ success: false, message: 'Not found' }, 404);

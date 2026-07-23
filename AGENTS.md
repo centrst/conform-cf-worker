@@ -18,7 +18,7 @@ npx wrangler deploy --dry-run
 - Reserve monthly quota before sending email.
 - Roll back the reservation when the email provider rejects the send.
 - All routes for the same normalized destination share one opaque owner ID.
-- Treat `LEGACY_ACCESS_KEYS` as read-only. Never delete or rewrite live records.
+- Never bind the existing Conform KV namespaces to this Worker.
 - Keep hosted and self-hosted delivery in this repository; hosted Conform must
   not maintain a private fork of the redirect logic.
 - Ship changes through feature branches and pull requests, never directly to

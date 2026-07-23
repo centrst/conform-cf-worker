@@ -23,8 +23,8 @@ function safeSubject(value: string): string {
   return value.replace(/[\u0000-\u001f\u007f]+/gu, ' ').trim().slice(0, 200);
 }
 
-export function submissionEndpoint(env: Env, origin: string, token: string): string {
-  return `${publicUrl(env, origin)}/f/${token}`;
+export function submissionEndpoint(env: Env, origin: string, formId: string): string {
+  return `${publicUrl(env, origin)}/f/${formId}`;
 }
 
 export async function sendSubmissionEmail(

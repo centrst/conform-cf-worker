@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isValidFormId,
   normalizeEmail,
   openToken,
   ownerIdForEmail,
+  randomRouteId,
   sealToken,
 } from './crypto';
 import type { RouteTokenPayload } from './types';
@@ -42,5 +44,16 @@ describe('route token cryptography', () => {
     expect(first).toBe(second);
     expect(first).not.toContain('owner');
     expect(normalizeEmail(' Owner@Example.com ')).toBe('owner@example.com');
+  });
+
+  it('generates an 80-bit public form id without ambiguous characters', () => {
+    const ids = Array.from({ length: 100 }, () => randomRouteId());
+    expect(new Set(ids)).toHaveLength(ids.length);
+    for (const id of ids) {
+      expect(id).toMatch(/^cfm_[A-HJ-NP-Z2-9]{16}$/u);
+      expect(isValidFormId(id)).toBe(true);
+    }
+    expect(isValidFormId('cfm_CONTACT')).toBe(false);
+    expect(isValidFormId('cfm_ABCDEFGHJKLMNPQ0')).toBe(false);
   });
 });

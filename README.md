@@ -1,49 +1,88 @@
 # conform-cf-worker
 
 The open-source Cloudflare Worker that receives a form and delivers its fields
-directly to a verified inbox. This is the delivery engine used by hosted
-Conform and the same Worker that anyone can deploy into their own Cloudflare
-account.
+to a verified inbox. Hosted Conform and self-hosted Conform use this same
+delivery engine.
 
 Source: <https://github.com/centrst/conform-cf-worker>
 
-## What it does
+## The model
 
-1. A form owner enters an inbox and a form name.
-2. In the default `verified` mode, the Worker registers that inbox as a
-   Cloudflare Email Routing destination. Cloudflare emails the owner to verify
-   it.
-3. Conform returns an encrypted, self-contained form endpoint.
-4. Each submission atomically reserves one unit from the inbox's shared monthly
+A form has two different names:
+
+- **Alias** — a customer-controlled label such as `Contact` or `Website`.
+  Aliases are not unique. One inbox can have any number of forms with the same
+  alias.
+- **Form ID** — a random 80-bit identifier such as
+  `cfm_7K4P9X2M8RWD3JNH`. This is the permanent public identity used in the
+  form endpoint.
+
+The normal flow is:
+
+1. The owner enters an inbox and an alias.
+2. Conform generates the form ID and encrypts the routing destination.
+3. In the default `verified` mode, Cloudflare emails the owner to verify the
+   destination inbox.
+4. The form posts to `https://forms.example.com/f/cfm_…`.
+5. The Worker atomically reserves one unit from that inbox's shared monthly
    allowance.
-5. When allowed, the Worker turns the fields into a plain-text email, optionally
-   attaches the same fields as `submission.json`, and sends it through
-   Cloudflare Email Service.
-6. Conform does not create a submission history.
+6. When allowed, the Worker decrypts the destination in memory, turns the
+   fields into a plain-text email, optionally attaches `submission.json`, and
+   sends it through Cloudflare Email Service.
+7. Conform does not create a submission history.
 
-All routes delivering to the same normalized inbox share one allowance. A
-failed email send rolls its reservation back. Once the allowance is exhausted,
-the Worker rejects the submission before calling the email provider.
+Every form targeting the same normalized inbox shares one allowance, regardless
+of its alias. A failed email send rolls its quota reservation back. Once the
+allowance is exhausted, the Worker rejects the submission before calling the
+email provider.
 
 ## The storage boundary
 
-This distinction is deliberate:
+This Worker does not use Workers KV, D1, or an external database. It creates two
+SQLite-backed Durable Object namespaces from `wrangler.toml`:
 
-| Data | Conform application storage | Cloudflare | Destination mailbox |
+### Form route storage
+
+One tiny record per form:
+
+```text
+form ID
+alias
+opaque inbox ID
+encrypted routing destination
+verification status
+Cloudflare destination ID
+creation timestamp
+```
+
+The destination is encrypted with AES-GCM before it is written. The opaque inbox
+ID is an HMAC of the normalized destination email. It lets forms for the same
+inbox share quota without using the email as a database key.
+
+The only customer-authored value stored in plaintext is the alias. The
+destination email is not stored in plaintext in the route or quota Durable
+Objects.
+
+### Quota storage
+
+One row per active inbox-month:
+
+```text
+UTC month
+used count
+limit
+```
+
+The Durable Object itself is addressed by the opaque inbox ID.
+
+### Data processed elsewhere
+
+| Data | Conform Durable Objects | Cloudflare Email Service | Destination mailbox |
 | --- | --- | --- | --- |
-| Form fields | Never stored | Processed in transit for Worker execution and email delivery | Stored according to the mailbox provider |
-| Destination email for new routes | Never stored in Conform KV, D1, or Durable Object rows | Stored as a verified destination in `verified` mode; processed for delivery in either mode | Known to the mailbox provider |
-| Form name | Carried inside the encrypted route token; not placed in the quota database | Processed when building the email | Included in the email |
-| Quota | UTC month, count, limit, and an opaque inbox identifier | Stored in a SQLite Durable Object | Not sent |
-
-The opaque inbox identifier is an HMAC of the normalized destination email. It
-cannot be reversed without the deployment secret, but it lets every form for
-the same inbox share one atomic counter.
-
-The route token contains the destination and form name encrypted with AES-GCM.
-The customer's website holds that token in its form `action`; there is no route
-record to look up. The health endpoint identifies the source repository and
-deployed commit so a hosted deployment can be compared with this code.
+| Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
+| Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
+| Alias | Stored with the route | Included when building the email | Included in the email |
+| Quota | Opaque ID, month, count and limit | Not included in the delivered email | Not sent |
 
 No hosted service can honestly promise that its operator is technically unable
 to inspect plaintext processed by infrastructure the operator controls.
@@ -68,16 +107,20 @@ Required configuration:
 - The included registration rate-limit binding, which receives only opaque HMAC
   keys and protects the destination-address allowance from automated exhaustion
 
+Pending routes become active when the landing page checks
+`GET /v1/routes/:form_id` after Cloudflare verification. The public form URL
+never changes.
+
 ### `arbitrary`
 
 Set `DELIVERY_MODE = "arbitrary"` after onboarding the sender domain to
 Cloudflare Email Sending. New inboxes receive a Conform confirmation email, and
-the route endpoint is revealed only after confirmation.
+the route activates only after confirmation.
 
-This uses the same `EMAIL` binding and route tokens. Existing verified
-destinations continue working; switching modes does not migrate or rewrite
-routes. Arbitrary-recipient sends use Cloudflare's outbound-email allowance and
-then its per-email pricing.
+This uses the same `EMAIL` binding, form IDs, route records and quota system.
+Existing verified routes continue working; switching modes does not migrate or
+rewrite them. Arbitrary-recipient sends use Cloudflare's outbound-email
+allowance and then its per-email pricing.
 
 ## Deploy it yourself
 
@@ -86,8 +129,6 @@ Prerequisites:
 - Node.js 20 or newer with Corepack
 - A Cloudflare account
 - A domain on Cloudflare DNS
-
-Clone and install:
 
 ```sh
 git clone https://github.com/centrst/conform-cf-worker.git
@@ -109,7 +150,7 @@ npx wrangler secret put ROUTE_TOKEN_SECRET
 npx wrangler secret put OWNER_HASH_SECRET
 ```
 
-For verified mode, also store:
+For verified mode:
 
 ```sh
 npx wrangler secret put CLOUDFLARE_API_TOKEN
@@ -127,38 +168,44 @@ corepack yarn verify
 npx wrangler deploy
 ```
 
-Set `MONTHLY_LIMIT = "0"` for an unlimited self-hosted deployment. In that
-configuration the Worker skips the quota binding entirely.
+Wrangler creates the route and quota Durable Object namespaces automatically.
+There is no KV namespace or database to create manually.
 
-## Create a form route
+Set `MONTHLY_LIMIT = "0"` for unlimited delivery. This skips quota writes; the
+route Durable Object remains because it resolves each short form ID.
+
+## Create a form
 
 ```sh
 curl https://forms.example.com/v1/routes \
   --request POST \
   --header 'Content-Type: application/json' \
-  --data '{"email":"owner@example.com","form_name":"Contact"}'
+  --data '{"email":"owner@example.com","alias":"Contact"}'
 ```
 
-Verified response:
+Response:
 
 ```json
 {
   "success": true,
-  "status": "active",
-  "endpoint": "https://forms.example.com/f/cf1.r...",
-  "form_name": "Contact",
-  "message": "Your form endpoint is ready."
+  "status": "pending_verification",
+  "form_id": "cfm_7K4P9X2M8RWD3JNH",
+  "alias": "Contact",
+  "endpoint": "https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH",
+  "message": "Check your inbox for Cloudflare’s verification email."
 }
 ```
 
-An unverified inbox returns the same endpoint with
-`"status": "pending_verification"`. It begins delivering after the owner follows
-Cloudflare's verification email.
+The endpoint is stable while verification is pending. Check status:
+
+```sh
+curl https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH
+```
 
 Use the endpoint directly:
 
 ```html
-<form action="https://forms.example.com/f/cf1.r..." method="post">
+<form action="https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH" method="post">
   <input name="email" type="email" required>
   <textarea name="message" required></textarea>
   <button type="submit">Send</button>
@@ -180,7 +227,7 @@ rejected. The default request-body limit is 100 KiB.
 
 The quota is not a log and does not use `COUNT(*)`.
 
-Each normalized inbox maps to one Durable Object using its opaque HMAC owner
+Each normalized inbox maps to one Durable Object through its opaque HMAC owner
 identifier. A successful reservation performs one atomic SQLite upsert:
 
 ```sql
@@ -197,26 +244,18 @@ RETURNING used, limit_count;
 A returned row allows delivery. No returned row means the allowance is already
 full. There is one row per active inbox-month, not one row per submission.
 
-## Existing hosted Conform routes
+## Existing hosted Conform
 
-Hosted Conform can bind its existing access-key KV namespace as
-`LEGACY_ACCESS_KEYS`. `POST /submit` then resolves old access keys and sends them
-through this same quota and delivery path.
+This Worker must never bind the existing Conform KV namespaces.
 
-Those pre-existing records contain their destination email because that is how
-the current service routes them. The no-route-database design applies to new
-encrypted route tokens. The adapter preserves, but does not expand, that legacy
-storage.
+During migration:
 
-The compatibility adapter is read-only:
-
-- it does not delete existing records;
-- it does not rewrite existing records;
-- it does not touch encrypted-response storage;
-- it does not change existing access keys.
-
-Migration should first deploy this Worker with the production KV binding, verify
-both existing clients, and only then move `api.conform.centrst.com`.
+1. Keep legacy `/submit` on the existing Worker.
+2. Route new `/v1/routes/*` and `/f/*` traffic to this Worker.
+3. Verify the new flow without changing either existing client.
+4. Migrate each existing client's form action to a generated `cfm_…` endpoint.
+5. Leave the legacy KV data untouched until a separate retention decision is
+   made.
 
 ## Development
 
