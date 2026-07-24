@@ -143,7 +143,7 @@
       "post": {
         "operationId": "createRoute",
         "summary": "Create a form endpoint",
-        "description": "Creates a permanent `/f/cfm_…` endpoint that delivers to the given inbox. Aliases are labels, deliberately not unique: posting the same email and alias twice creates two distinct form endpoints. All forms delivering to the same inbox identity share one monthly allowance (`+tags`, Gmail dots, and provider domain aliases count as the same inbox). If the inbox is not yet verified, the response is `202` with `next_action.type = \"human_verification\"` — install the form anyway (the endpoint URL is stable) and poll `status_url` until `status` is `active`. Send an `Idempotency-Key` header to make creation replay-safe: retrying with the same key and body returns the SAME form endpoint (`200`, `replayed: true`, current status) instead of minting a new one; the same key with a different body is rejected with `422 idempotency_key_conflict`. Treat idempotency keys and the returned `management_token` as secrets. A `delivery` property is reserved for future webhook delivery and is rejected with `delivery_config_unsupported` until it ships.",
+        "description": "Creates a permanent `/f/cfm_…` endpoint that delivers to the given inbox. Aliases are labels, deliberately not unique: posting the same email and alias twice creates two distinct form endpoints. All forms delivering to the same inbox identity share one monthly allowance (`+tags`, Gmail dots, and provider domain aliases count as the same inbox). If the inbox is not yet verified, the response is `202` with `next_action.type = \"human_verification\"` — install the form anyway (the endpoint URL is stable) and poll `status_url` until `status` is `active`. Send an `Idempotency-Key` header to make creation replay-safe: retrying with the same key and body returns the SAME form endpoint (`200`, `replayed: true`, current status) instead of minting a new one; the same key with a different body is rejected with `422 idempotency_key_conflict`. Treat idempotency keys and the returned `management_token` as secrets. A `delivery` property configures signed webhook delivery: `{\"mode\": \"webhook\"|\"both\", \"webhook\": {\"url\": \"https://…\"}}`. Email verification remains the trust root for every mode — the destination inbox must always confirm before any delivery starts, and the verification email discloses the webhook URL. Webhook responses include a one-time `webhook.secret` (`whsec_…`, Standard Webhooks format) for signature validation; deliveries carry `webhook-id`/`webhook-timestamp`/`webhook-signature` headers, and receivers should deduplicate on `webhook-id`. There is NO durable retry queue by design (conForm stores no submission content): `mode: \"webhook\"` delivers synchronously and rolls back quota on failure (`502 webhook_delivery_failed`, safe to retry); `mode: \"both\"` treats email as authoritative and fires the webhook best-effort in the background.",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -441,6 +441,12 @@
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
           },
+          "502": {
+            "description": "`webhook_delivery_failed` (webhook-only routes) — retryable; the quota reservation was rolled back and nothing was delivered. Receivers deduplicate on the `webhook-id` header in case a late first attempt landed.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
           "503": {
             "description": "`delivery_failed` — retryable; the quota reservation was rolled back, so nothing was delivered or counted.",
             "content": {
@@ -491,6 +497,7 @@
           "idempotency_key_conflict",
           "delivery_config_unsupported",
           "invalid_redirect_url",
+          "invalid_webhook_url",
           "unknown_framework",
           "management_token_required",
           "management_token_invalid",
@@ -509,6 +516,7 @@
           "inbox_not_verified",
           "monthly_allowance_exhausted",
           "delivery_failed",
+          "webhook_delivery_failed",
           "method_not_allowed",
           "not_found",
           "config_incomplete",
@@ -574,6 +582,25 @@
             "minLength": 1,
             "maxLength": 120,
             "description": "Human label for this form, e.g. \"Contact\". Not unique. `formName` and `form_name` are accepted aliases for this property."
+          },
+          "delivery": {
+            "type": "object",
+            "description": "Optional webhook delivery configuration. Email verification remains required in every mode.",
+            "properties": {
+              "mode": { "type": "string", "enum": ["email", "webhook", "both"], "default": "email" },
+              "webhook": {
+                "type": "object",
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Public https:// receiver. Required for webhook and both modes; rejected for IP literals and internal hostnames."
+                  }
+                },
+                "required": ["url"]
+              }
+            },
+            "additionalProperties": true
           }
         },
         "additionalProperties": true
@@ -611,6 +638,14 @@
             "type": "string",
             "description": "Bearer credential for DELETE. Returned at creation and on idempotent replay only — treat as a secret and store it."
           },
+          "webhook": {
+            "type": "object",
+            "description": "Present when webhook delivery is configured: the signing secret, returned at creation and on idempotent replay. Treat as a secret.",
+            "properties": {
+              "secret": { "type": "string", "description": "whsec_… Standard Webhooks signing secret." }
+            },
+            "required": ["secret"]
+          },
           "replayed": {
             "type": "boolean",
             "description": "True when this response is an idempotent replay reflecting the route's current state."
@@ -633,6 +668,11 @@
           "echo": {
             "type": ["string", "null"],
             "description": "The non-boolean `_test` value, echoed back as machine-checkable proof."
+          },
+          "delivery": {
+            "type": "object",
+            "description": "Per-channel delivery report, e.g. {\"email\": \"delivered\"} or {\"email\": \"delivered\", \"webhook\": \"queued\"}.",
+            "additionalProperties": { "type": "string" }
           },
           "used": { "type": "integer", "description": "Present when a monthly limit is configured." },
           "limit": { "type": "integer", "description": "Present when a monthly limit is configured." }
@@ -694,7 +734,7 @@
     "invalid_idempotency_key": { "status": 400, "retryable": false },
     "idempotency_key_conflict": { "status": 422, "retryable": false },
     "delivery_config_unsupported": { "status": 400, "retryable": false },
-    "invalid_webhook_url": { "status": 400, "retryable": false, "planned": true },
+    "invalid_webhook_url": { "status": 400, "retryable": false },
     "invalid_redirect_url": { "status": 400, "retryable": false },
     "unknown_framework": { "status": 400, "retryable": false },
     "rate_limited": { "status": 429, "retryable": true },
@@ -714,7 +754,7 @@
     "inbox_not_verified": { "status": 409, "retryable": true },
     "monthly_allowance_exhausted": { "status": 429, "retryable": false },
     "delivery_failed": { "status": 503, "retryable": true },
-    "webhook_delivery_failed": { "status": 502, "retryable": true, "planned": true },
+    "webhook_delivery_failed": { "status": 502, "retryable": true },
     "method_not_allowed": { "status": 405, "retryable": false },
     "not_found": { "status": 404, "retryable": false },
     "config_incomplete": { "status": 500, "retryable": false },

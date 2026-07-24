@@ -44,10 +44,18 @@ import {
   getStoredRoute,
 } from './routes';
 import { parseSubmission } from './submission';
+import {
+  deliverWebhook,
+  generateWebhookSecret,
+  submissionEvent,
+  validateWebhookUrl,
+} from './webhook';
 import type {
   Env,
   ManageTokenPayload,
   PendingRoutePayload,
+  RouteDeliveryConfig,
+  RouteDeliveryMode,
   RouteTokenPayload,
   StoredRouteRecord,
 } from './types';
@@ -64,19 +72,27 @@ function routePayload(
   formName: string,
   ownerId: string,
   routeId = randomRouteId(),
+  delivery?: RouteDeliveryConfig,
 ): RouteTokenPayload {
   return {
     kind: 'route',
-    version: 1,
+    version: delivery ? 2 : 1,
     email,
     formName,
     ownerId,
     routeId,
     issuedAt: Date.now(),
+    ...(delivery ? { delivery } : {}),
   };
 }
 
-async function parseRouteRequest(request: Request): Promise<{ email: string; alias: string }> {
+interface ParsedRouteRequest {
+  email: string;
+  alias: string;
+  delivery?: { mode: RouteDeliveryMode; webhookUrl?: string };
+}
+
+async function parseRouteRequest(request: Request): Promise<ParsedRouteRequest> {
   let body: {
     email?: unknown;
     alias?: unknown;
@@ -90,12 +106,6 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; ali
     throw new ApiError('invalid_json', 'A JSON body is required');
   }
 
-  if (body.delivery !== undefined) {
-    throw new ApiError(
-      'delivery_config_unsupported',
-      'Delivery configuration is not supported yet. Omit the delivery property; submissions are delivered by email.',
-    );
-  }
   if (typeof body.email !== 'string' || !isValidEmail(normalizeEmail(body.email))) {
     throw new ApiError('invalid_email', 'A valid email address is required');
   }
@@ -110,7 +120,38 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; ali
       `Form name must be between 1 and ${MAX_FORM_NAME_LENGTH} characters`,
     );
   }
-  return { email: normalizeEmail(body.email), alias: rawFormName.trim() };
+
+  let delivery: ParsedRouteRequest['delivery'];
+  if (body.delivery !== undefined) {
+    if (!body.delivery || typeof body.delivery !== 'object' || Array.isArray(body.delivery)) {
+      throw new ApiError(
+        'delivery_config_unsupported',
+        'delivery must be an object with a mode of "email", "webhook", or "both"',
+      );
+    }
+    const raw = body.delivery as { mode?: unknown; webhook?: unknown };
+    const mode = raw.mode === undefined ? 'email' : raw.mode;
+    if (mode !== 'email' && mode !== 'webhook' && mode !== 'both') {
+      throw new ApiError(
+        'delivery_config_unsupported',
+        'Delivery mode must be "email", "webhook", or "both"',
+      );
+    }
+    let webhookUrl: string | undefined;
+    if (mode !== 'email') {
+      const webhook = raw.webhook as { url?: unknown } | undefined;
+      if (!webhook || typeof webhook.url !== 'string') {
+        throw new ApiError(
+          'invalid_webhook_url',
+          'delivery.webhook.url is required for webhook delivery',
+        );
+      }
+      webhookUrl = validateWebhookUrl(webhook.url);
+    }
+    delivery = { mode, ...(webhookUrl ? { webhookUrl } : {}) };
+  }
+
+  return { email: normalizeEmail(body.email), alias: rawFormName.trim(), delivery };
 }
 
 interface StoreNewRouteParams {
@@ -122,6 +163,7 @@ interface StoreNewRouteParams {
   formId?: string;
   requestHash?: string;
   quotaKey?: string;
+  delivery?: RouteDeliveryConfig;
 }
 
 /**
@@ -134,7 +176,13 @@ async function storeNewRoute(
 ): Promise<StoredRouteRecord | null> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const formId = params.formId ?? randomRouteId();
-    const route = routePayload(params.email, params.alias, params.ownerId, formId);
+    const route = routePayload(
+      params.email,
+      params.alias,
+      params.ownerId,
+      formId,
+      params.delivery,
+    );
     const record: StoredRouteRecord = {
       formId,
       alias: params.alias,
@@ -186,6 +234,11 @@ async function replayRoute(
     );
   }
   const record = await refreshVerifiedRoute(env, existing);
+  const payload = await openToken<RouteTokenPayload>(
+    record.encryptedRoute,
+    'route',
+    env.ROUTE_TOKEN_SECRET,
+  );
   const origin = new URL(request.url).origin;
   return json(
     {
@@ -201,13 +254,26 @@ async function replayRoute(
       }),
       replayed: true,
       management_token: await mintManagementToken(env, record.formId, record.ownerId),
+      ...(payload.delivery?.webhook
+        ? { webhook: { secret: payload.delivery.webhook.secret } }
+        : {}),
     },
     200,
   );
 }
 
 async function createRoute(request: Request, env: Env): Promise<Response> {
-  const { email, alias } = await parseRouteRequest(request);
+  const { email, alias, delivery: requestedDelivery } = await parseRouteRequest(request);
+  const deliveryConfig: RouteDeliveryConfig | undefined =
+    requestedDelivery && requestedDelivery.mode !== 'email'
+      ? {
+          mode: requestedDelivery.mode,
+          webhook: {
+            url: requestedDelivery.webhookUrl as string,
+            secret: generateWebhookSecret(),
+          },
+        }
+      : undefined;
 
   const idempotencyHeader = request.headers.get('Idempotency-Key');
   if (idempotencyHeader !== null && !IDEMPOTENCY_KEY_PATTERN.test(idempotencyHeader)) {
@@ -242,7 +308,13 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
   }
 
   const requestHash = idempotencyKey
-    ? await requestFingerprint({ email, alias, delivery: null })
+    ? await requestFingerprint({
+        email,
+        alias,
+        delivery: requestedDelivery
+          ? { mode: requestedDelivery.mode, url: requestedDelivery.webhookUrl ?? null }
+          : null,
+      })
     : undefined;
   const derivedId = idempotencyKey
     ? await deriveRouteId(ownerId, idempotencyKey, env.OWNER_HASH_SECRET)
@@ -282,6 +354,7 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       formId: derivedId,
       requestHash,
       quotaKey,
+      delivery: deliveryConfig,
     });
     if (!record) {
       const existing = await getStoredRoute(env, derivedId as string);
@@ -300,6 +373,9 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
             destination.status === 'verified' ? 'Your form endpoint is ready.' : pendingMessage(env),
         }),
         management_token: await mintManagementToken(env, record.formId, ownerId),
+        ...(deliveryConfig?.webhook
+          ? { webhook: { secret: deliveryConfig.webhook.secret } }
+          : {}),
       },
       destination.status === 'verified' ? 201 : 202,
     );
@@ -307,7 +383,7 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
 
   const now = Date.now();
   const formId = derivedId ?? randomRouteId();
-  const route = routePayload(email, alias, ownerId, formId);
+  const route = routePayload(email, alias, ownerId, formId, deliveryConfig);
   const pending: PendingRoutePayload = {
     ...route,
     kind: 'pending',
@@ -324,6 +400,7 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
     formId,
     requestHash,
     quotaKey,
+    delivery: deliveryConfig,
   });
   if (!record) {
     const existing = await getStoredRoute(env, formId);
@@ -342,6 +419,9 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
         message: 'Check your inbox to confirm this form.',
       }),
       management_token: await mintManagementToken(env, formId, ownerId),
+      ...(deliveryConfig?.webhook
+        ? { webhook: { secret: deliveryConfig.webhook.secret } }
+        : {}),
     },
     202,
   );
@@ -647,15 +727,18 @@ async function submit(
     );
   }
 
-  try {
-    await sendSubmissionEmail(env, route, parsed.fields, {
-      format: parsed.format,
-      replyTo: parsed.replyTo,
-      subject: parsed.subject,
-      test: parsed.test,
-      testNonce: parsed.testNonce,
-    });
-  } catch (error) {
+  const routeDelivery = route.delivery;
+  const routeDeliveryMode: RouteDeliveryMode = routeDelivery?.mode ?? 'email';
+  const event =
+    routeDeliveryMode !== 'email' && routeDelivery?.webhook
+      ? submissionEvent(route, parsed.fields, {
+          test: parsed.test,
+          replyTo: parsed.replyTo,
+          subject: parsed.subject,
+        })
+      : undefined;
+
+  async function rollback(): Promise<void> {
     if (reservation.limit > 0) {
       try {
         await rollbackQuota(env, quotaKey, reservation.month);
@@ -664,8 +747,49 @@ async function submit(
         // also fails. No form fields are included in logs or error messages.
       }
     }
-    if (error instanceof ConfigError) throw error;
-    throw new ApiError('delivery_failed', 'Email delivery failed');
+  }
+
+  let deliveryReport: Record<string, string>;
+  if (routeDeliveryMode === 'webhook' && routeDelivery?.webhook && event) {
+    // Synchronous, at-most-once delivery: on failure the reservation is rolled
+    // back and nothing was delivered, so the request is safe to retry.
+    // Receivers deduplicate on the webhook-id header.
+    const result = await deliverWebhook(routeDelivery.webhook, event, {
+      retryWaitsMs: [1000],
+      timeoutMs: 10_000,
+    });
+    if (!result.ok) {
+      await rollback();
+      throw new ApiError('webhook_delivery_failed', 'Webhook delivery failed');
+    }
+    deliveryReport = { webhook: 'delivered' };
+  } else {
+    try {
+      await sendSubmissionEmail(env, route, parsed.fields, {
+        format: parsed.format,
+        replyTo: parsed.replyTo,
+        subject: parsed.subject,
+        test: parsed.test,
+        testNonce: parsed.testNonce,
+      });
+    } catch (error) {
+      await rollback();
+      if (error instanceof ConfigError) throw error;
+      throw new ApiError('delivery_failed', 'Email delivery failed');
+    }
+    if (routeDeliveryMode === 'both' && routeDelivery?.webhook && event) {
+      // Email is authoritative and already delivered; the webhook is
+      // best-effort in the background — the human inbox is the durable record.
+      ctx.waitUntil(
+        deliverWebhook(routeDelivery.webhook, event, {
+          retryWaitsMs: [1000, 4000],
+          timeoutMs: 10_000,
+        }).catch(() => undefined),
+      );
+      deliveryReport = { email: 'delivered', webhook: 'queued' };
+    } else {
+      deliveryReport = { email: 'delivered' };
+    }
   }
 
   if (thresholdCrossed(reservation.used, reservation.limit)) {
@@ -678,6 +802,7 @@ async function submit(
     success: true,
     message: parsed.test ? 'Test submission delivered' : 'Submission delivered',
     ...(parsed.test ? { test: true, echo: parsed.testNonce ?? null } : {}),
+    delivery: deliveryReport,
     used: reservation.limit > 0 ? reservation.used : undefined,
     limit: reservation.limit > 0 ? reservation.limit : undefined,
   });

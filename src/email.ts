@@ -98,6 +98,12 @@ export async function sendArbitraryVerification(
     subject: safeSubject(`Confirm ${pending.formName} on conForm`),
     text: [
       `Confirm that ${pending.email} should receive submissions for ${pending.formName}.`,
+      ...(pending.delivery?.webhook
+        ? [
+            '',
+            `Submissions for this form will also be delivered as signed webhooks to ${pending.delivery.webhook.url}.`,
+          ]
+        : []),
       '',
       verifyUrl,
       '',

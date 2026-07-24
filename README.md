@@ -351,6 +351,32 @@ Browser form posts (requests accepting `text/html`) receive a minimal HTML
 result page instead of JSON. JSON, URL-encoded, and multipart text fields are
 accepted. File uploads are rejected. The default request-body limit is 100 KiB.
 
+## Signed webhooks
+
+A route can deliver to a webhook as well as (or instead of) email:
+
+```sh
+curl https://forms.example.com/v1/routes \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"email":"owner@example.com","alias":"Contact","delivery":{"mode":"both","webhook":{"url":"https://hooks.example.com/receiver"}}}'
+```
+
+Email verification stays the trust root in every mode: no delivery of any kind
+starts until the inbox owner confirms, and the confirmation email discloses
+the webhook URL. The creation response includes `webhook.secret` (`whsec_…`,
+Standard Webhooks format) exactly once — and again on idempotent replays.
+Deliveries are JSON events (`type: "submission.received"`) signed with
+`webhook-id` / `webhook-timestamp` / `webhook-signature` headers; deduplicate
+on `webhook-id`.
+
+There is deliberately **no durable retry queue** — redelivery would require
+storing submission content, which conForm never does. `mode: "webhook"`
+delivers synchronously: on failure the quota reservation is rolled back and
+the request returns `502 webhook_delivery_failed` (safe to retry).
+`mode: "both"` treats email as authoritative and fires the webhook best-effort
+in the background — the inbox is the durable record.
+
 ## Idempotent creation and route management
 
 Send an `Idempotency-Key` header (1–200 printable ASCII characters, scoped per

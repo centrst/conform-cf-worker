@@ -175,10 +175,47 @@ describe('every active error code is emitted as its documented envelope', () => 
         fetchWorker(
           post(
             '/v1/routes',
-            JSON.stringify({ email: 'owner@example.com', alias: 'Contact', delivery: {} }),
+            JSON.stringify({
+              email: 'owner@example.com',
+              alias: 'Contact',
+              delivery: { mode: 'carrier-pigeon' },
+            }),
           ),
           baseEnv(),
         ),
+    },
+    {
+      code: 'invalid_webhook_url',
+      run: () =>
+        fetchWorker(
+          post(
+            '/v1/routes',
+            JSON.stringify({
+              email: 'owner@example.com',
+              alias: 'Contact',
+              delivery: { mode: 'webhook', webhook: { url: 'http://insecure.example.com/hook' } },
+            }),
+          ),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'webhook_delivery_failed',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes, {
+          delivery: {
+            mode: 'webhook',
+            webhook: { url: 'https://hooks.example.com/receiver', secret: 'whsec_AAAA' },
+          },
+        });
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => Response.json({ rejected: true }, { status: 410 })),
+        );
+        return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'x' })), env);
+      },
     },
     {
       code: 'invalid_redirect_url',
