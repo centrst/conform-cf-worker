@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "useDefineForClassFields": true
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"]
+  "include": ["src/**/*.ts", "mcp/src/**/*.ts", "vitest.config.ts"]
 }

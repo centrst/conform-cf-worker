@@ -1,0 +1,9 @@
+name = "conform-mcp"
+main = "mcp/src/index.ts"
+compatibility_date = "2026-07-21"
+keep_vars = true
+
+# Self-host default for the conForm MCP server. Set CONFORM_BASE_URL in the
+# dashboard (or a [vars] block in your fork) to point at your engine's URL;
+# when unset, the server targets the request origin — correct when it is
+# routed on the same hostname as the engine.
