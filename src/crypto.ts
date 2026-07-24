@@ -1,5 +1,8 @@
+import { parseExceptionList, quotaIdentity } from './email-identity';
 import { ConfigError, TokenError } from './errors';
-import type { PendingRoutePayload, RouteTokenPayload } from './types';
+import type { ManageTokenPayload, PendingRoutePayload, RouteTokenPayload } from './types';
+
+type TokenPayload = RouteTokenPayload | PendingRoutePayload | ManageTokenPayload;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -43,13 +46,16 @@ function decodeSecret(secret: string | undefined, name: string): Uint8Array<Arra
   return decoded;
 }
 
-function purposeCode(kind: RouteTokenPayload['kind'] | PendingRoutePayload['kind']): string {
-  return kind === 'route' ? 'r' : 'p';
+function purposeCode(kind: TokenPayload['kind']): string {
+  if (kind === 'route') return 'r';
+  if (kind === 'pending') return 'p';
+  return 'm';
 }
 
-function purposeFromCode(code: string): RouteTokenPayload['kind'] | PendingRoutePayload['kind'] {
+function purposeFromCode(code: string): TokenPayload['kind'] {
   if (code === 'r') return 'route';
   if (code === 'p') return 'pending';
+  if (code === 'm') return 'manage';
   throw new TokenError('Unsupported conForm token purpose');
 }
 
@@ -62,7 +68,7 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email);
 }
 
-export async function ownerIdForEmail(email: string, secret: string | undefined): Promise<string> {
+async function hmacId(value: string, secret: string | undefined): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
     decodeSecret(secret, 'OWNER_HASH_SECRET'),
@@ -70,12 +76,68 @@ export async function ownerIdForEmail(email: string, secret: string | undefined)
     false,
     ['sign'],
   );
-  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(normalizeEmail(email)));
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(value));
   return base64UrlEncode(new Uint8Array(signature).subarray(0, 18));
 }
 
+export async function ownerIdForEmail(email: string, secret: string | undefined): Promise<string> {
+  return hmacId(normalizeEmail(email), secret);
+}
+
+/**
+ * The quota/rate-limit key for an address: the HMAC of its billing identity
+ * (see email-identity.ts), unless the exact address is on the operator
+ * exception list — then the exact-address hash is used, restoring a separate
+ * allowance for a falsely merged mailbox.
+ */
+export async function quotaKeyForEmail(
+  email: string,
+  secret: string | undefined,
+  exceptionList?: string,
+): Promise<string> {
+  const exact = await ownerIdForEmail(email, secret);
+  if (parseExceptionList(exceptionList).has(exact)) return exact;
+  return hmacId(`quota.v1.${quotaIdentity(email)}`, secret);
+}
+
+/**
+ * Deterministic form ID for an Idempotency-Key: the same owner and key always
+ * derive the same ID, which makes route creation replay-safe with no snapshot
+ * storage — the route record itself is the idempotency state.
+ */
+export async function deriveRouteId(
+  ownerId: string,
+  idempotencyKey: string,
+  secret: string | undefined,
+): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    decodeSecret(secret, 'OWNER_HASH_SECRET'),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`idem.v1.${ownerId}.${idempotencyKey}`),
+  );
+  const bytes = new Uint8Array(signature).subarray(0, 16);
+  let formId = 'cfm_';
+  for (const byte of bytes) {
+    formId += FORM_ID_ALPHABET[byte & 31];
+  }
+  return formId;
+}
+
+/** Fingerprint of a creation request body, for idempotent-replay conflict checks. */
+export async function requestFingerprint(value: unknown): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(JSON.stringify(value)));
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
 export async function sealToken(
-  payload: RouteTokenPayload | PendingRoutePayload,
+  payload: TokenPayload,
   secret: string | undefined,
 ): Promise<string> {
   const code = purposeCode(payload.kind);
@@ -99,7 +161,7 @@ export async function sealToken(
   return `${TOKEN_PREFIX}.${code}.${base64UrlEncode(iv)}.${base64UrlEncode(new Uint8Array(ciphertext))}`;
 }
 
-export async function openToken<T extends RouteTokenPayload | PendingRoutePayload>(
+export async function openToken<T extends TokenPayload>(
   token: string,
   expectedKind: T['kind'],
   secret: string | undefined,
@@ -137,7 +199,8 @@ export async function openToken<T extends RouteTokenPayload | PendingRoutePayloa
   }
 
   const payload = JSON.parse(decoder.decode(plaintext)) as T;
-  if (payload.kind !== expectedKind || payload.version !== 1) {
+  const version = payload.version as number;
+  if (payload.kind !== expectedKind || (version !== 1 && version !== 2)) {
     throw new TokenError('Invalid conForm route token payload');
   }
   return payload;
