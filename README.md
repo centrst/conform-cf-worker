@@ -279,6 +279,29 @@ add fields where useful: `rate_limited` carries `retry_after_seconds`,
 enforced by `src/contract.test.ts`, which fails CI when the spec, the error
 table, or the runtime drift apart.
 
+Discovery: `GET /` (also `/health` and `/.well-known/conform.json`) returns a
+machine-readable descriptor of this deployment — endpoints, verification
+model, limits, and storage posture. `GET /llms.txt` serves the same contract
+as compact text for language models.
+
+## Install code
+
+Every route serves ready-to-install, accessible form code with its endpoint
+baked in:
+
+```sh
+curl 'https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH/install?framework=react'
+```
+
+Frameworks: `html` (zero-JS baseline), `js`, `react`, `vue`, `svelte`,
+`astro`, `nextjs`. The response includes the files, installation notes, the
+route's current status with `next_action`, and a `test_command` that sends a
+`_test`-marked submission as delivery proof. Add `raw=1` for the bare file
+content, or use `GET /v1/install?framework=…` for a generic artifact with a
+`{{FORM_ENDPOINT}}` placeholder. Artifacts are unstyled semantic HTML with
+labeled controls, a polite live region for outcomes, and the honeypot wired
+in — they inherit the host site's styling.
+
 Use the endpoint directly:
 
 ```html

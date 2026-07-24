@@ -56,6 +56,89 @@
         }
       }
     },
+    "/.well-known/conform.json": {
+      "get": {
+        "operationId": "getWellKnown",
+        "summary": "Discovery document (well-known location)",
+        "description": "Identical to `GET /`.",
+        "responses": {
+          "200": {
+            "description": "Service descriptor.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Discovery" } }
+            }
+          }
+        }
+      }
+    },
+    "/llms.txt": {
+      "get": {
+        "operationId": "getLlmsTxt",
+        "summary": "Plain-text API summary for language models",
+        "responses": {
+          "200": { "description": "Compact API contract as text.", "content": { "text/plain": {} } }
+        }
+      }
+    },
+    "/v1/install": {
+      "get": {
+        "operationId": "getGenericInstallCode",
+        "summary": "Generic install artifact",
+        "description": "Ready-to-install, accessible form code with a `{{FORM_ENDPOINT}}` placeholder — for previews, documentation, and drift checks. Use `/v1/routes/{formId}/install` for code with the real endpoint baked in.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FrameworkParam" },
+          { "$ref": "#/components/parameters/RawParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Install artifact (or raw file content with `raw=1`).",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InstallArtifact" } },
+              "text/plain": {}
+            }
+          },
+          "400": {
+            "description": "`unknown_framework` — the message lists valid values.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/{formId}/install": {
+      "get": {
+        "operationId": "getInstallCode",
+        "summary": "Personalized install artifact",
+        "description": "The same accessible form code with this route's real endpoint baked in, plus the route's current status and `next_action`. The `test_command` submits a `_test`-marked submission for delivery proof.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          { "$ref": "#/components/parameters/FrameworkParam" },
+          { "$ref": "#/components/parameters/RawParam" }
+        ],
+        "responses": {
+          "200": {
+            "description": "Install artifact (or raw file content with `raw=1`).",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InstallArtifact" } },
+              "text/plain": {}
+            }
+          },
+          "400": {
+            "description": "`unknown_framework`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
     "/v1/routes": {
       "post": {
         "operationId": "createRoute",
@@ -376,6 +459,24 @@
         "required": true,
         "schema": { "type": "string", "pattern": "^cfm_[A-HJ-NP-Z2-9]{16}$" },
         "description": "The permanent public form identifier, e.g. cfm_7K4P9X2M8RWD3JNH."
+      },
+      "FrameworkParam": {
+        "name": "framework",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "enum": ["html", "js", "react", "vue", "svelte", "astro", "nextjs"],
+          "default": "html"
+        },
+        "description": "Which artifact to generate. Vite and other bundlers use the `js` artifact."
+      },
+      "RawParam": {
+        "name": "raw",
+        "in": "query",
+        "required": false,
+        "schema": { "type": "string", "enum": ["1"] },
+        "description": "Return the first file's content as text/plain instead of the JSON envelope."
       }
     },
     "schemas": {
@@ -390,6 +491,7 @@
           "idempotency_key_conflict",
           "delivery_config_unsupported",
           "invalid_redirect_url",
+          "unknown_framework",
           "management_token_required",
           "management_token_invalid",
           "rate_limited",
@@ -537,6 +639,34 @@
         },
         "additionalProperties": true
       },
+      "InstallArtifact": {
+        "type": "object",
+        "required": ["success", "framework", "files", "notes", "test_command"],
+        "properties": {
+          "success": { "const": true },
+          "framework": { "type": "string" },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "content"],
+              "properties": {
+                "path": { "type": "string" },
+                "content": { "type": "string" }
+              }
+            }
+          },
+          "notes": { "type": "array", "items": { "type": "string" } },
+          "test_command": {
+            "type": "string",
+            "description": "curl command that sends a _test-marked submission."
+          },
+          "form_id": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "pending_verification"] },
+          "next_action": { "$ref": "#/components/schemas/NextAction" }
+        },
+        "additionalProperties": false
+      },
       "Discovery": {
         "type": "object",
         "description": "Deployment self-description served at / and /health.",
@@ -566,7 +696,7 @@
     "delivery_config_unsupported": { "status": 400, "retryable": false },
     "invalid_webhook_url": { "status": 400, "retryable": false, "planned": true },
     "invalid_redirect_url": { "status": 400, "retryable": false },
-    "unknown_framework": { "status": 400, "retryable": false, "planned": true },
+    "unknown_framework": { "status": 400, "retryable": false },
     "rate_limited": { "status": 429, "retryable": true },
     "verified_destination_capacity": { "status": 503, "retryable": false },
     "route_not_found": { "status": 404, "retryable": false },
