@@ -227,7 +227,16 @@ Response:
   "form_id": "cfm_7K4P9X2M8RWD3JNH",
   "alias": "Contact",
   "endpoint": "https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH",
-  "message": "Check your inbox for Cloudflare’s verification email."
+  "status_url": "https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH",
+  "message": "Check your inbox for Cloudflare’s verification email. Your endpoint will begin delivering after you confirm it.",
+  "next_action": {
+    "type": "human_verification",
+    "message": "The destination inbox must confirm a verification email. Poll the status URL until status is \"active\" — the endpoint URL will not change.",
+    "poll": {
+      "url": "https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH",
+      "interval_seconds": 15
+    }
+  }
 }
 ```
 
@@ -236,6 +245,25 @@ The endpoint is stable while verification is pending. Check status:
 ```sh
 curl https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH
 ```
+
+## Machine contract
+
+The full API is described by [`openapi.json`](openapi.json), served by every
+deployment at `GET /openapi.json`. `GET /` returns a discovery descriptor with
+the API version and this deployment's storage posture. Every non-2xx response
+is JSON with the same envelope:
+
+```json
+{ "success": false, "error": "inbox_not_verified", "message": "This inbox has not been verified yet.", "retryable": true }
+```
+
+`error` is a stable machine code from the `x-conform-error-codes` table in the
+spec; `retryable: true` means the identical request may succeed later. Codes
+add fields where useful: `rate_limited` carries `retry_after_seconds`,
+`monthly_allowance_exhausted` carries `used`/`limit`/`resets_at`, and
+`inbox_not_verified` carries a `next_action` poll block. The contract is
+enforced by `src/contract.test.ts`, which fails CI when the spec, the error
+table, or the runtime drift apart.
 
 Use the endpoint directly:
 

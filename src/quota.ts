@@ -1,3 +1,4 @@
+import { ConfigError } from './errors';
 import type { Env, QuotaReservation } from './types';
 
 function json(data: unknown, status = 200): Response {
@@ -87,7 +88,9 @@ async function quotaRequest(
   path: '/reserve' | '/rollback',
   body: { limit?: number; month?: string },
 ): Promise<Response> {
-  if (!env.QUOTAS) throw new Error('QUOTAS binding is required when MONTHLY_LIMIT is enabled');
+  if (!env.QUOTAS) {
+    throw new ConfigError('QUOTAS binding is required when MONTHLY_LIMIT is enabled');
+  }
   const id = env.QUOTAS.idFromName(ownerId);
   return env.QUOTAS.get(id).fetch(`https://quota.internal${path}`, {
     method: 'POST',

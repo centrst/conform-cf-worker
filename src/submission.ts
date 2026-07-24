@@ -1,4 +1,5 @@
 import { isValidEmail } from './crypto';
+import { ApiError } from './errors';
 import type { SubmissionFields, SubmissionValue } from './types';
 
 const INTERNAL_FIELDS = new Set([
@@ -47,12 +48,12 @@ function cleanHeader(value: string | undefined, maxLength: number): string | und
 async function parseBody(request: Request, maxBytes: number): Promise<SubmissionFields> {
   const declaredLength = Number.parseInt(request.headers.get('content-length') ?? '0', 10);
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new Response('Form submission is too large', { status: 413 });
+    throw new ApiError('submission_too_large', 'Form submission is too large');
   }
 
   const bytes = await request.arrayBuffer();
   if (bytes.byteLength > maxBytes) {
-    throw new Response('Form submission is too large', { status: 413 });
+    throw new ApiError('submission_too_large', 'Form submission is too large');
   }
 
   const contentType = request.headers.get('content-type') ?? '';
@@ -61,10 +62,10 @@ async function parseBody(request: Request, maxBytes: number): Promise<Submission
     try {
       parsed = JSON.parse(new TextDecoder().decode(bytes));
     } catch {
-      throw new Response('Invalid JSON body', { status: 400 });
+      throw new ApiError('invalid_json', 'Invalid JSON body');
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Response('JSON form body must be an object', { status: 400 });
+      throw new ApiError('invalid_json', 'JSON form body must be an object');
     }
 
     const fields = Object.create(null) as SubmissionFields;
@@ -95,16 +96,16 @@ async function parseBody(request: Request, maxBytes: number): Promise<Submission
     const fields = Object.create(null) as SubmissionFields;
     form.forEach((value, key) => {
       if (typeof value !== 'string') {
-        throw new Response('File uploads are not supported', { status: 400 });
+        throw new ApiError('file_uploads_unsupported', 'File uploads are not supported');
       }
       addField(fields, key, value);
     });
     return fields;
   }
 
-  throw new Response(
+  throw new ApiError(
+    'unsupported_media_type',
     'Use application/json, application/x-www-form-urlencoded, or multipart/form-data',
-    { status: 415 },
   );
 }
 

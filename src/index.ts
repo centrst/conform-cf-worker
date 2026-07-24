@@ -1,8 +1,10 @@
+import openapiSpec from '../openapi.json';
 import {
   DestinationCapacityError,
   destinationAddressStatus,
   ensureDestinationAddress,
 } from './cloudflare-destinations';
+import { nextActionFor, quotaResetsAt, routeResource } from './contract';
 import {
   isValidEmail,
   isValidFormId,
@@ -13,11 +15,14 @@ import {
   sealToken,
 } from './crypto';
 import {
+  publicUrl,
+  routeStatusUrl,
   sendArbitraryVerification,
   sendQuotaWarning,
   sendSubmissionEmail,
   submissionEndpoint,
 } from './email';
+import { ApiError, ConfigError, TokenError, errorResponse, json } from './errors';
 import { InboxQuota, reserveQuota, rollbackQuota } from './quota';
 import {
   activateStoredRoute,
@@ -39,17 +44,6 @@ export { openToken, ownerIdForEmail, sealToken } from './crypto';
 
 const ROUTE_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 const MAX_FORM_NAME_LENGTH = 120;
-
-function json(data: unknown, status = 200, extraHeaders?: HeadersInit): Response {
-  return Response.json(data, {
-    status,
-    headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Cache-Control': 'no-store',
-      ...extraHeaders,
-    },
-  });
-}
 
 function deliveryMode(env: Env): DeliveryMode {
   return env.DELIVERY_MODE === 'arbitrary' ? 'arbitrary' : 'verified';
@@ -92,11 +86,11 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; ali
   try {
     body = (await request.json()) as typeof body;
   } catch {
-    throw new Response('A JSON body is required', { status: 400 });
+    throw new ApiError('invalid_json', 'A JSON body is required');
   }
 
   if (typeof body.email !== 'string' || !isValidEmail(normalizeEmail(body.email))) {
-    throw new Response('A valid email address is required', { status: 400 });
+    throw new ApiError('invalid_email', 'A valid email address is required');
   }
   const rawFormName = body.alias ?? body.formName ?? body.form_name;
   if (
@@ -104,9 +98,10 @@ async function parseRouteRequest(request: Request): Promise<{ email: string; ali
     !rawFormName.trim() ||
     rawFormName.trim().length > MAX_FORM_NAME_LENGTH
   ) {
-    throw new Response(`Form name must be between 1 and ${MAX_FORM_NAME_LENGTH} characters`, {
-      status: 400,
-    });
+    throw new ApiError(
+      'invalid_alias',
+      `Form name must be between 1 and ${MAX_FORM_NAME_LENGTH} characters`,
+    );
   }
   return { email: normalizeEmail(body.email), alias: rawFormName.trim() };
 }
@@ -150,13 +145,9 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       env.REGISTRATION_RATE_LIMITER.limit({ key: `inbox:${ownerId}` }),
     ]);
     if (!clientLimit.success || !inboxLimit.success) {
-      return json(
-        {
-          success: false,
-          message: 'Too many form registrations. Try again in a minute.',
-        },
-        429,
-      );
+      throw new ApiError('rate_limited', 'Too many form registrations. Try again in a minute.', {
+        retry_after_seconds: 60,
+      });
     }
   }
   const origin = new URL(request.url).origin;
@@ -171,14 +162,9 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       );
     } catch (error) {
       if (error instanceof DestinationCapacityError) {
-        return json(
-          {
-            success: false,
-            error: 'verified_destination_capacity',
-            message:
-              'Verified-inbox capacity is full. Set DELIVERY_MODE=arbitrary to continue onboarding.',
-          },
-          503,
+        throw new ApiError(
+          'verified_destination_capacity',
+          'Verified-inbox capacity is full. Set DELIVERY_MODE=arbitrary to continue onboarding.',
         );
       }
       throw error;
@@ -194,17 +180,17 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
       destination.addressId,
     );
     return json(
-      {
-        success: true,
-        status: status === 'active' ? 'active' : 'pending_verification',
-        form_id: record.formId,
+      routeResource({
+        status,
+        formId: record.formId,
         alias,
         endpoint: submissionEndpoint(env, origin, record.formId),
+        statusUrl: routeStatusUrl(env, origin, record.formId),
         message:
           destination.status === 'verified'
             ? 'Your form endpoint is ready.'
             : 'Check your inbox for Cloudflare’s verification email. Your endpoint will begin delivering after you confirm it.',
-      },
+      }),
       destination.status === 'verified' ? 201 : 202,
     );
   }
@@ -232,14 +218,15 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
     throw new Error('Could not allocate a unique form ID');
   }
   return json(
-    {
-      success: true,
-      status: 'pending_verification',
-      form_id: formId,
+    routeResource({
+      status: 'pending',
+      formId,
       alias,
       endpoint: submissionEndpoint(env, origin, formId),
+      statusUrl: routeStatusUrl(env, origin, formId),
+      verificationExpiresAt: new Date(pending.expiresAt).toISOString(),
       message: 'Check your inbox to confirm this form.',
-    },
+    }),
     202,
   );
 }
@@ -260,10 +247,10 @@ function verificationPage(token: string): Response {
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Confirm Conform route</title>
+<title>Confirm conForm route</title>
 <body>
   <main>
-    <h1>Confirm this Conform route</h1>
+    <h1>Confirm this conForm route</h1>
     <p>Confirm that this inbox should receive the form submissions.</p>
     <form method="post" action="/v1/routes/verify">
       <input type="hidden" name="token" value="${safeToken}">
@@ -289,7 +276,9 @@ function verificationPage(token: string): Response {
 async function verifyArbitraryRoute(request: Request, env: Env): Promise<Response> {
   if (request.method === 'GET') {
     const token = new URL(request.url).searchParams.get('token');
-    if (!token) return json({ success: false, message: 'Verification token is required' }, 400);
+    if (!token) {
+      throw new ApiError('verification_token_required', 'Verification token is required');
+    }
     await openToken<PendingRoutePayload>(token, 'pending', env.ROUTE_TOKEN_SECRET);
     return verificationPage(token);
   }
@@ -297,7 +286,7 @@ async function verifyArbitraryRoute(request: Request, env: Env): Promise<Respons
   const form = await request.formData();
   const token = form.get('token');
   if (typeof token !== 'string') {
-    return json({ success: false, message: 'Verification token is required' }, 400);
+    throw new ApiError('verification_token_required', 'Verification token is required');
   }
   const pending = await openToken<PendingRoutePayload>(
     token,
@@ -305,13 +294,13 @@ async function verifyArbitraryRoute(request: Request, env: Env): Promise<Respons
     env.ROUTE_TOKEN_SECRET,
   );
   if (pending.expiresAt < Date.now()) {
-    return json({ success: false, message: 'Verification token has expired' }, 410);
+    throw new ApiError('verification_token_expired', 'Verification token has expired');
   }
   if (!isValidFormId(pending.routeId)) {
-    return json({ success: false, message: 'Invalid form ID' }, 400);
+    throw new ApiError('verification_token_invalid', 'Verification token is invalid');
   }
   const stored = await getStoredRoute(env, pending.routeId);
-  if (!stored) return json({ success: false, message: 'Form route not found' }, 404);
+  if (!stored) throw new ApiError('route_not_found', 'Form route not found');
   const route = await openToken<RouteTokenPayload>(
     stored.encryptedRoute,
     'route',
@@ -323,18 +312,22 @@ async function verifyArbitraryRoute(request: Request, env: Env): Promise<Respons
     route.email !== pending.email ||
     route.formName !== pending.formName
   ) {
-    return json({ success: false, message: 'Verification does not match this route' }, 409);
+    throw new ApiError('verification_mismatch', 'Verification does not match this route');
   }
   const activated = await activateStoredRoute(env, pending.routeId);
-  if (!activated) return json({ success: false, message: 'Form route not found' }, 404);
-  return json({
-    success: true,
-    status: 'active',
-    form_id: activated.formId,
-    alias: activated.alias,
-    endpoint: submissionEndpoint(env, new URL(request.url).origin, activated.formId),
-    message: 'Your form endpoint is ready.',
-  });
+  if (!activated) throw new ApiError('route_not_found', 'Form route not found');
+  const origin = new URL(request.url).origin;
+  return json(
+    routeResource({
+      status: 'active',
+      formId: activated.formId,
+      alias: activated.alias,
+      endpoint: submissionEndpoint(env, origin, activated.formId),
+      statusUrl: routeStatusUrl(env, origin, activated.formId),
+      createdAt: activated.createdAt,
+      message: 'Your form endpoint is ready.',
+    }),
+  );
 }
 
 async function refreshVerifiedRoute(
@@ -363,18 +356,26 @@ async function routeStatus(
   formId: string,
 ): Promise<Response> {
   if (!isValidFormId(formId)) {
-    return json({ success: false, message: 'Form route not found' }, 404);
+    throw new ApiError('route_not_found', 'Form route not found');
   }
   const found = await getStoredRoute(env, formId);
-  if (!found) return json({ success: false, message: 'Form route not found' }, 404);
+  if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
-  return json({
-    success: true,
-    status: record.status === 'active' ? 'active' : 'pending_verification',
-    form_id: record.formId,
-    alias: record.alias,
-    endpoint: submissionEndpoint(env, new URL(request.url).origin, record.formId),
-  });
+  const origin = new URL(request.url).origin;
+  return json(
+    routeResource({
+      status: record.status,
+      formId: record.formId,
+      alias: record.alias,
+      endpoint: submissionEndpoint(env, origin, record.formId),
+      statusUrl: routeStatusUrl(env, origin, record.formId),
+      createdAt: record.createdAt,
+      message:
+        record.status === 'active'
+          ? 'This form endpoint is active.'
+          : 'This form endpoint is waiting for its inbox to be verified.',
+    }),
+  );
 }
 
 function thresholdCrossed(used: number, limit: number): boolean {
@@ -391,24 +392,20 @@ async function submit(
   const parsed = await parseSubmission(request, maxRequestSize(env));
   if (parsed.spam) return json({ success: true, message: 'Submission received' });
   if (Object.keys(parsed.fields).length === 0) {
-    return json({ success: false, message: 'Form data is required' }, 400);
+    throw new ApiError('submission_empty', 'Form data is required');
   }
 
   if (!isValidFormId(formId)) {
-    return json({ success: false, message: 'Form route not found' }, 404);
+    throw new ApiError('route_not_found', 'Form route not found');
   }
   const found = await getStoredRoute(env, formId);
-  if (!found) return json({ success: false, message: 'Form route not found' }, 404);
+  if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
   if (record.status !== 'active') {
-    return json(
-      {
-        success: false,
-        error: 'inbox_not_verified',
-        message: 'This inbox has not been verified yet.',
-      },
-      409,
-    );
+    const origin = new URL(request.url).origin;
+    throw new ApiError('inbox_not_verified', 'This inbox has not been verified yet.', {
+      next_action: nextActionFor('pending', routeStatusUrl(env, origin, formId)),
+    });
   }
   const route = await openToken<RouteTokenPayload>(
     record.encryptedRoute,
@@ -425,15 +422,14 @@ async function submit(
 
   const reservation = await reserveQuota(env, route.ownerId, monthlyLimit(env));
   if (!reservation.allowed) {
-    return json(
+    throw new ApiError(
+      'monthly_allowance_exhausted',
+      'This inbox has reached its shared monthly submission allowance.',
       {
-        success: false,
-        error: 'monthly_allowance_exhausted',
-        message: 'This inbox has reached its shared monthly submission allowance.',
         used: reservation.used,
         limit: reservation.limit,
+        resets_at: quotaResetsAt(reservation.month),
       },
-      429,
     );
   }
 
@@ -443,7 +439,7 @@ async function submit(
       replyTo: parsed.replyTo,
       subject: parsed.subject,
     });
-  } catch {
+  } catch (error) {
     if (reservation.limit > 0) {
       try {
         await rollbackQuota(env, route.ownerId, reservation.month);
@@ -452,7 +448,8 @@ async function submit(
         // also fails. No form fields are included in logs or error messages.
       }
     }
-    return json({ success: false, message: 'Email delivery failed' }, 503);
+    if (error instanceof ConfigError) throw error;
+    throw new ApiError('delivery_failed', 'Email delivery failed');
   }
 
   if (thresholdCrossed(reservation.used, reservation.limit)) {
@@ -469,6 +466,37 @@ async function submit(
   });
 }
 
+function methodNotAllowed(allow: string): Response {
+  return errorResponse(new ApiError('method_not_allowed', 'Method not allowed'), {
+    Allow: allow,
+  });
+}
+
+function descriptor(env: Env, origin: string): Response {
+  return json({
+    name: 'conform-cf-worker',
+    api_version: openapiSpec.info.version,
+    version: env.SOURCE_COMMIT || 'development',
+    source: env.SOURCE_URL || 'https://github.com/centrst/conform-cf-worker',
+    openapi_url: `${publicUrl(env, origin)}/openapi.json`,
+    delivery_mode: deliveryMode(env),
+    persistence: {
+      submission_fields: false,
+      destination_email_plaintext: false,
+      route: [
+        'form id',
+        'alias',
+        'opaque inbox id',
+        'encrypted destination',
+        'verification status',
+        'Cloudflare destination id',
+      ],
+      quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
+      workers_kv: false,
+    },
+  });
+}
+
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
@@ -477,61 +505,51 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
       status: 204,
       headers: {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Accept',
+        'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Accept, Idempotency-Key, Authorization',
         'Access-Control-Max-Age': '86400',
       },
     });
   }
 
-  if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
-    return json({
-      name: 'conform-cf-worker',
-      version: env.SOURCE_COMMIT || 'development',
-      source: env.SOURCE_URL || 'https://github.com/centrst/conform-cf-worker',
-      delivery_mode: deliveryMode(env),
-      persistence: {
-        submission_fields: false,
-        destination_email_plaintext: false,
-        route: [
-          'form id',
-          'alias',
-          'opaque inbox id',
-          'encrypted destination',
-          'verification status',
-          'Cloudflare destination id',
-        ],
-        quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
-        workers_kv: false,
-      },
-    });
+  if (url.pathname === '/' || url.pathname === '/health') {
+    if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+    return descriptor(env, url.origin);
   }
 
-  if (url.pathname === '/v1/routes' && request.method === 'POST') {
+  if (url.pathname === '/openapi.json') {
+    if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+    return json(openapiSpec, 200, { 'Cache-Control': 'public, max-age=300' });
+  }
+
+  if (url.pathname === '/v1/routes') {
+    if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
     return createRoute(request, env);
   }
 
-  if (
-    url.pathname === '/v1/routes/verify' &&
-    (request.method === 'GET' || request.method === 'POST')
-  ) {
+  if (url.pathname === '/v1/routes/verify') {
+    if (request.method !== 'GET' && request.method !== 'POST') {
+      return methodNotAllowed('GET, POST, OPTIONS');
+    }
     if (deliveryMode(env) !== 'arbitrary') {
-      return json({ success: false, message: 'Cloudflare verifies this inbox directly' }, 404);
+      throw new ApiError('verification_unavailable', 'Cloudflare verifies this inbox directly');
     }
     return verifyArbitraryRoute(request, env);
   }
 
-  if (request.method === 'GET' && url.pathname.startsWith('/v1/routes/')) {
+  if (url.pathname.startsWith('/v1/routes/')) {
     const formId = decodeURIComponent(url.pathname.slice('/v1/routes/'.length));
+    if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
     return routeStatus(request, env, formId);
   }
 
-  if (request.method === 'POST' && url.pathname.startsWith('/f/')) {
+  if (url.pathname.startsWith('/f/')) {
     const formId = decodeURIComponent(url.pathname.slice('/f/'.length));
+    if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
     return submit(request, env, ctx, formId);
   }
 
-  return json({ success: false, message: 'Not found' }, 404);
+  throw new ApiError('not_found', 'Not found');
 }
 
 export default {
@@ -539,21 +557,14 @@ export default {
     try {
       return await handle(request, env, ctx);
     } catch (error) {
-      if (error instanceof Response) return error;
-      if (
-        error instanceof Error &&
-        (error.message.includes('token') || error.message.includes('not configured'))
-      ) {
-        const configurationError = error.message.includes('not configured');
-        return json(
-          {
-            success: false,
-            message: configurationError ? 'Worker configuration is incomplete' : 'Invalid route',
-          },
-          configurationError ? 500 : 401,
-        );
+      if (error instanceof ApiError) return errorResponse(error);
+      if (error instanceof TokenError) {
+        return errorResponse(new ApiError('verification_token_invalid', 'Invalid route'));
       }
-      return json({ success: false, message: 'Request could not be processed' }, 500);
+      if (error instanceof ConfigError) {
+        return errorResponse(new ApiError('config_incomplete', 'Worker configuration is incomplete'));
+      }
+      return errorResponse(new ApiError('internal_error', 'Request could not be processed'));
     }
   },
 } satisfies ExportedHandler<Env>;

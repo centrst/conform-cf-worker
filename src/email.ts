@@ -1,3 +1,4 @@
+import { ConfigError } from './errors';
 import { jsonAttachment, submissionText } from './submission';
 import type {
   EmailMessageBuilder,
@@ -8,14 +9,14 @@ import type {
 } from './types';
 
 function sender(env: Env): { email: string; name: string } {
-  if (!env.FROM_EMAIL) throw new Error('FROM_EMAIL is not configured');
+  if (!env.FROM_EMAIL) throw new ConfigError('FROM_EMAIL is not configured');
   return {
     email: env.FROM_EMAIL,
-    name: env.FROM_NAME?.trim() || 'Conform',
+    name: env.FROM_NAME?.trim() || 'conForm',
   };
 }
 
-function publicUrl(env: Env, fallbackOrigin: string): string {
+export function publicUrl(env: Env, fallbackOrigin: string): string {
   return (env.PUBLIC_URL || fallbackOrigin).replace(/\/+$/u, '');
 }
 
@@ -25,6 +26,10 @@ function safeSubject(value: string): string {
 
 export function submissionEndpoint(env: Env, origin: string, formId: string): string {
   return `${publicUrl(env, origin)}/f/${formId}`;
+}
+
+export function routeStatusUrl(env: Env, origin: string, formId: string): string {
+  return `${publicUrl(env, origin)}/v1/routes/${formId}`;
 }
 
 export async function sendSubmissionEmail(
@@ -56,8 +61,8 @@ export async function sendQuotaWarning(
 ): Promise<void> {
   const exhausted = used >= limit;
   const subject = exhausted
-    ? `Your Conform allowance is now full`
-    : `Your Conform allowance is running low`;
+    ? `Your conForm allowance is now full`
+    : `Your conForm allowance is running low`;
   const text = exhausted
     ? `You have used all ${limit} submissions in your shared monthly allowance. Upgrade to keep receiving submissions this month.`
     : `You have used ${used} of ${limit} submissions in your shared monthly allowance. Upgrade before you run out.`;
@@ -80,7 +85,7 @@ export async function sendArbitraryVerification(
   await env.EMAIL.send({
     to: pending.email,
     from: sender(env),
-    subject: safeSubject(`Confirm ${pending.formName} on Conform`),
+    subject: safeSubject(`Confirm ${pending.formName} on conForm`),
     text: [
       `Confirm that ${pending.email} should receive submissions for ${pending.formName}.`,
       '',
