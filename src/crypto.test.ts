@@ -34,7 +34,7 @@ describe('route token cryptography', () => {
     expect(token).not.toContain(payload.email);
     await expect(openToken(token, 'route', secret(1))).resolves.toEqual(payload);
     await expect(openToken(token, 'route', secret(2))).rejects.toThrow(
-      'Invalid Conform route token',
+      'Invalid conForm route token',
     );
   });
 

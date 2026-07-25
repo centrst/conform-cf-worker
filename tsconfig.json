@@ -6,6 +6,7 @@
     "lib": ["ES2022", "WebWorker"],
     "types": ["@cloudflare/workers-types"],
     "strict": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "skipLibCheck": true,
     "useDefineForClassFields": true

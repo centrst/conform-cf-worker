@@ -1,4 +1,5 @@
 import { normalizeEmail } from './crypto';
+import { ConfigError } from './errors';
 
 interface CloudflareAddress {
   id?: string;
@@ -33,7 +34,7 @@ function apiHeaders(apiToken: string): HeadersInit {
 
 function configuration(accountId?: string, apiToken?: string): [string, string] {
   if (!accountId || !apiToken) {
-    throw new Error(
+    throw new ConfigError(
       'CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN are required in verified delivery mode',
     );
   }

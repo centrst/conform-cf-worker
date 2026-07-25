@@ -1,0 +1,494 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "conForm delivery API",
+    "version": "1.0.0",
+    "summary": "Form-to-email endpoints with no account requirement.",
+    "description": "conForm by Centrst turns one POST into a permanent form endpoint that delivers submissions to a verified inbox. No API key or signup is required. The only human step: the destination inbox must confirm a verification email before delivery starts — poll the route status until `status` is `active`; the endpoint URL never changes while pending. Every response is JSON (except the HTML verification page); every failure carries a stable `error` code from `x-conform-error-codes` plus a `retryable` flag. Submissions are never stored: fields exist in Worker memory only for the duration of delivery. Self-hosted deployments of the open-source Worker expose this same API at their own origin.",
+    "license": { "name": "MIT", "identifier": "MIT" }
+  },
+  "servers": [
+    {
+      "url": "https://api.conform.centrst.com",
+      "description": "conForm hosted by Centrst. Self-hosted Workers serve the same paths at their own origin."
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "operationId": "getServiceDescriptor",
+        "summary": "Service discovery descriptor",
+        "description": "Machine-readable description of this deployment: API version, source commit, delivery mode, storage/privacy posture, and the URL of this specification.",
+        "responses": {
+          "200": {
+            "description": "Service descriptor.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Discovery" } }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "getHealth",
+        "summary": "Health check",
+        "description": "Identical to `GET /`.",
+        "responses": {
+          "200": {
+            "description": "Service descriptor.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Discovery" } }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenApi",
+        "summary": "This specification",
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document.",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/v1/routes": {
+      "post": {
+        "operationId": "createRoute",
+        "summary": "Create a form endpoint",
+        "description": "Creates a permanent `/f/cfm_…` endpoint that delivers to the given inbox. Aliases are labels, deliberately not unique: posting the same email and alias twice creates two distinct form endpoints. All forms delivering to the same inbox share one monthly allowance. If the inbox is not yet verified, the response is `202` with `next_action.type = \"human_verification\"` — install the form anyway (the endpoint URL is stable) and poll `status_url` until `status` is `active`.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateRouteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The inbox is already verified; the endpoint is active immediately.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
+            }
+          },
+          "202": {
+            "description": "Endpoint reserved; the destination inbox must confirm a verification email before delivery starts.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
+            }
+          },
+          "400": {
+            "description": "`invalid_json`, `invalid_email`, or `invalid_alias`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "429": {
+            "description": "`rate_limited` — includes `retry_after_seconds`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "503": {
+            "description": "`verified_destination_capacity` — this deployment cannot register more verified inboxes.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/verify": {
+      "get": {
+        "operationId": "getVerificationPage",
+        "summary": "Human verification page (arbitrary delivery mode only)",
+        "description": "Renders the HTML confirmation page linked from the verification email. In the default verified delivery mode this path returns `404` `verification_unavailable` because Cloudflare verifies the inbox directly.",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "HTML confirmation page.", "content": { "text/html": {} } },
+          "400": {
+            "description": "`verification_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "401": {
+            "description": "`verification_token_invalid`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`verification_unavailable` in verified delivery mode.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "confirmVerification",
+        "summary": "Confirm a route (arbitrary delivery mode only)",
+        "description": "Consumes the emailed verification token and activates the route. Activating an already-active route succeeds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": { "token": { "type": "string" } },
+                "required": ["token"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Route activated.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
+            }
+          },
+          "400": {
+            "description": "`verification_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "401": {
+            "description": "`verification_token_invalid`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`, or `verification_unavailable` in verified delivery mode.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "409": {
+            "description": "`verification_mismatch` — the token does not match the stored route.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "410": {
+            "description": "`verification_token_expired` — tokens live 24 hours; create the route again.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/{formId}": {
+      "get": {
+        "operationId": "getRouteStatus",
+        "summary": "Poll route status",
+        "description": "Returns the route's current state and refreshes verification from the delivery provider, so polling this endpoint activates the route as soon as the human confirms. Malformed and unknown form IDs return byte-identical `404` responses by design.",
+        "parameters": [{ "$ref": "#/components/parameters/FormId" }],
+        "responses": {
+          "200": {
+            "description": "Current route state, including `next_action`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/f/{formId}": {
+      "post": {
+        "operationId": "submitForm",
+        "summary": "Submit a form",
+        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `redirect`/`_redirect` are reserved (redirect support is planned, currently ignored); `access_key` is reserved for compatibility. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
+        "parameters": [{ "$ref": "#/components/parameters/FormId" }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": { "type": "object", "additionalProperties": true }
+            },
+            "multipart/form-data": {
+              "schema": { "type": "object", "additionalProperties": true }
+            },
+            "application/json": {
+              "schema": { "type": "object", "additionalProperties": true }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SubmissionAccepted" }
+              }
+            }
+          },
+          "400": {
+            "description": "`submission_empty`, `invalid_json`, or `file_uploads_unsupported`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "409": {
+            "description": "`inbox_not_verified` — retryable; includes `next_action` with the status URL to poll.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "413": {
+            "description": "`submission_too_large`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "415": {
+            "description": "`unsupported_media_type`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "429": {
+            "description": "`monthly_allowance_exhausted` — includes `used`, `limit`, and `resets_at`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "503": {
+            "description": "`delivery_failed` — retryable; the quota reservation was rolled back, so nothing was delivered or counted.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "FormId": {
+        "name": "formId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string", "pattern": "^cfm_[A-HJ-NP-Z2-9]{16}$" },
+        "description": "The permanent public form identifier, e.g. cfm_7K4P9X2M8RWD3JNH."
+      }
+    },
+    "schemas": {
+      "ErrorCode": {
+        "type": "string",
+        "description": "Stable machine-readable failure codes currently emitted at runtime. The full table, including planned codes, is in x-conform-error-codes at the document root.",
+        "enum": [
+          "invalid_json",
+          "invalid_email",
+          "invalid_alias",
+          "rate_limited",
+          "verified_destination_capacity",
+          "route_not_found",
+          "verification_token_required",
+          "verification_token_invalid",
+          "verification_token_expired",
+          "verification_mismatch",
+          "verification_unavailable",
+          "submission_empty",
+          "submission_too_large",
+          "unsupported_media_type",
+          "file_uploads_unsupported",
+          "inbox_not_verified",
+          "monthly_allowance_exhausted",
+          "delivery_failed",
+          "method_not_allowed",
+          "not_found",
+          "config_incomplete",
+          "internal_error"
+        ]
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "description": "Every non-2xx response uses this envelope. `retryable: true` means the identical request may succeed later; specific codes add fields such as `retry_after_seconds`, `used`, `limit`, `resets_at`, or `next_action`.",
+        "required": ["success", "error", "message", "retryable"],
+        "properties": {
+          "success": { "const": false },
+          "error": { "$ref": "#/components/schemas/ErrorCode" },
+          "message": { "type": "string", "description": "Human-readable explanation." },
+          "retryable": { "type": "boolean" },
+          "retry_after_seconds": { "type": "integer" },
+          "used": { "type": "integer" },
+          "limit": { "type": "integer" },
+          "resets_at": { "type": "string", "format": "date-time" },
+          "next_action": { "$ref": "#/components/schemas/NextAction" }
+        },
+        "additionalProperties": true
+      },
+      "NextAction": {
+        "description": "Tells a client exactly what to do next.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["type"],
+            "properties": { "type": { "const": "none" } },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["type", "message", "poll"],
+            "properties": {
+              "type": { "const": "human_verification" },
+              "message": { "type": "string" },
+              "poll": {
+                "type": "object",
+                "required": ["url", "interval_seconds"],
+                "properties": {
+                  "url": { "type": "string", "format": "uri" },
+                  "interval_seconds": { "type": "integer" }
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "CreateRouteRequest": {
+        "type": "object",
+        "required": ["email", "alias"],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "Destination inbox. Never stored in plaintext; encrypted at rest."
+          },
+          "alias": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Human label for this form, e.g. \"Contact\". Not unique. `formName` and `form_name` are accepted aliases for this property."
+          }
+        },
+        "additionalProperties": true
+      },
+      "RouteResource": {
+        "type": "object",
+        "required": [
+          "success",
+          "status",
+          "form_id",
+          "alias",
+          "endpoint",
+          "status_url",
+          "message",
+          "next_action"
+        ],
+        "properties": {
+          "success": { "const": true },
+          "status": { "type": "string", "enum": ["active", "pending_verification"] },
+          "form_id": { "type": "string", "pattern": "^cfm_[A-HJ-NP-Z2-9]{16}$" },
+          "alias": { "type": "string" },
+          "endpoint": {
+            "type": "string",
+            "format": "uri",
+            "description": "Permanent submission URL — stable even while verification is pending."
+          },
+          "status_url": { "type": "string", "format": "uri" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "verification_expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Arbitrary delivery mode only: when the emailed verification token expires."
+          },
+          "message": { "type": "string" },
+          "next_action": { "$ref": "#/components/schemas/NextAction" }
+        },
+        "additionalProperties": false
+      },
+      "SubmissionAccepted": {
+        "type": "object",
+        "required": ["success", "message"],
+        "properties": {
+          "success": { "const": true },
+          "message": { "type": "string" },
+          "used": { "type": "integer", "description": "Present when a monthly limit is configured." },
+          "limit": { "type": "integer", "description": "Present when a monthly limit is configured." }
+        },
+        "additionalProperties": true
+      },
+      "Discovery": {
+        "type": "object",
+        "description": "Deployment self-description served at / and /health.",
+        "required": ["name", "api_version", "version", "source", "delivery_mode", "persistence"],
+        "properties": {
+          "name": { "const": "conform-cf-worker" },
+          "api_version": { "type": "string" },
+          "version": { "type": "string", "description": "Source commit of the running Worker." },
+          "source": { "type": "string", "format": "uri" },
+          "openapi_url": { "type": "string", "format": "uri" },
+          "delivery_mode": { "type": "string", "enum": ["verified", "arbitrary"] },
+          "persistence": {
+            "type": "object",
+            "description": "Exactly what this deployment stores. Submission fields are never persisted."
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "x-conform-error-codes": {
+    "invalid_json": { "status": 400, "retryable": false },
+    "invalid_email": { "status": 400, "retryable": false },
+    "invalid_alias": { "status": 400, "retryable": false },
+    "invalid_idempotency_key": { "status": 400, "retryable": false, "planned": true },
+    "idempotency_key_conflict": { "status": 422, "retryable": false, "planned": true },
+    "delivery_config_unsupported": { "status": 400, "retryable": false, "planned": true },
+    "invalid_webhook_url": { "status": 400, "retryable": false, "planned": true },
+    "invalid_redirect_url": { "status": 400, "retryable": false, "planned": true },
+    "unknown_framework": { "status": 400, "retryable": false, "planned": true },
+    "rate_limited": { "status": 429, "retryable": true },
+    "verified_destination_capacity": { "status": 503, "retryable": false },
+    "route_not_found": { "status": 404, "retryable": false },
+    "verification_token_required": { "status": 400, "retryable": false },
+    "verification_token_invalid": { "status": 401, "retryable": false },
+    "verification_token_expired": { "status": 410, "retryable": false },
+    "verification_mismatch": { "status": 409, "retryable": false },
+    "verification_unavailable": { "status": 404, "retryable": false },
+    "management_token_required": { "status": 401, "retryable": false, "planned": true },
+    "management_token_invalid": { "status": 403, "retryable": false, "planned": true },
+    "submission_empty": { "status": 400, "retryable": false },
+    "submission_too_large": { "status": 413, "retryable": false },
+    "unsupported_media_type": { "status": 415, "retryable": false },
+    "file_uploads_unsupported": { "status": 400, "retryable": false },
+    "inbox_not_verified": { "status": 409, "retryable": true },
+    "monthly_allowance_exhausted": { "status": 429, "retryable": false },
+    "delivery_failed": { "status": 503, "retryable": true },
+    "webhook_delivery_failed": { "status": 502, "retryable": true, "planned": true },
+    "method_not_allowed": { "status": 405, "retryable": false },
+    "not_found": { "status": 404, "retryable": false },
+    "config_incomplete": { "status": 500, "retryable": false },
+    "internal_error": { "status": 500, "retryable": true }
+  }
+}
