@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import worker from './index';
 import { baseEnv, executionContext } from './test-support';
 import type { Env, StoredRouteRecord } from './types';
@@ -79,6 +79,61 @@ describe('account route listing', () => {
     );
     expect(unauthorized.status).toBe(401);
     expect(await unauthorized.json()).toMatchObject({ error: 'account_lookup_unauthorized' });
+  });
+
+  it('refreshes verified destination status while listing account routes', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const ownerRoutes = new Map<string, Map<string, string>>();
+    const env: Env = {
+      ...baseEnv({ routes, ownerRoutes }),
+      ACCOUNT_LOOKUP_SECRET: LOOKUP_SECRET,
+      CLOUDFLARE_ACCOUNT_ID: 'account-id',
+      CLOUDFLARE_API_TOKEN: 'api-token',
+      DELIVERY_MODE: 'verified',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(input.toString());
+        if (url.pathname.endsWith('/addresses/destination-id')) {
+          return Response.json({
+            success: true,
+            result: {
+              id: 'destination-id',
+              email: 'owner@example.com',
+              verified: '2026-07-27T00:00:00Z',
+            },
+          });
+        }
+        return Response.json({
+          success: true,
+          result: [
+            {
+              id: 'destination-id',
+              email: 'owner@example.com',
+              verified: null,
+            },
+          ],
+          result_info: { total_pages: 1 },
+        });
+      }),
+    );
+
+    const createdResponse = await fetchWorker(createRequest('owner@example.com'), env);
+    expect(createdResponse.status).toBe(202);
+    const created = (await createdResponse.json()) as { form_id: string };
+
+    const listedResponse = await fetchWorker(lookupRequest(['owner@example.com']), env);
+    expect(listedResponse.status).toBe(200);
+    expect(await listedResponse.json()).toMatchObject({
+      routes: [
+        {
+          form_id: created.form_id,
+          status: 'active',
+        },
+      ],
+    });
+    expect(routes.get(created.form_id)?.status).toBe('active');
   });
 
   it('lets a management-token holder index a route created before the account index existed', async () => {

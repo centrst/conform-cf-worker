@@ -2,7 +2,6 @@ import openapiSpec from '../openapi.json';
 import { listAccountRoutes } from './account';
 import {
   DestinationCapacityError,
-  destinationAddressStatus,
   ensureDestinationAddress,
 } from './cloudflare-destinations';
 import { deliveryMode, maxRequestSize, monthlyLimit } from './config';
@@ -53,6 +52,7 @@ import {
   submissionEvent,
   validateWebhookUrl,
 } from './webhook';
+import { refreshVerifiedRoute } from './verification';
 import type {
   Env,
   ManageTokenPayload,
@@ -555,26 +555,6 @@ async function verifyArbitraryRoute(request: Request, env: Env): Promise<Respons
       message: 'Your form endpoint is ready.',
     }),
   );
-}
-
-async function refreshVerifiedRoute(
-  env: Env,
-  record: StoredRouteRecord,
-): Promise<StoredRouteRecord> {
-  if (
-    record.status === 'active' ||
-    deliveryMode(env) !== 'verified' ||
-    !record.destinationId
-  ) {
-    return record;
-  }
-  const destination = await destinationAddressStatus(
-    record.destinationId,
-    env.CLOUDFLARE_ACCOUNT_ID,
-    env.CLOUDFLARE_API_TOKEN,
-  );
-  if (destination.status !== 'verified') return record;
-  return (await activateStoredRoute(env, record.formId)) ?? record;
 }
 
 async function routeStatus(
