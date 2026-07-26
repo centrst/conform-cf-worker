@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "com.centrst/conform",
+  "description": "Create form-to-email endpoints with conForm: provision a form, poll its human verification, fetch ready-to-install accessible code, and prove delivery with a marked test submission. No account or API key required.",
+  "status": "active",
+  "version": "0.1.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://api.conform.centrst.com/mcp"
+    }
+  ]
+}

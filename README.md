@@ -284,6 +284,31 @@ machine-readable descriptor of this deployment — endpoints, verification
 model, limits, and storage posture. `GET /llms.txt` serves the same contract
 as compact text for language models.
 
+## MCP server
+
+`mcp/` contains a stateless [Model Context Protocol](https://modelcontextprotocol.io)
+server (Streamable HTTP) that fronts the public API with five tools:
+`create_form` (idempotent by default), `get_form_status`, `get_install_code`,
+`send_test_submission`, and `get_service_info`. It is implemented directly on
+JSON-RPC, so this repository stays at zero runtime dependencies.
+
+Add it to a coding agent:
+
+```sh
+claude mcp add --transport http conform https://api.conform.centrst.com/mcp
+```
+
+Cursor / VS Code (`mcp.json`):
+
+```json
+{ "mcpServers": { "conform": { "url": "https://api.conform.centrst.com/mcp" } } }
+```
+
+Self-hosters deploy it with `npx wrangler deploy --config wrangler.mcp.toml`
+and set `CONFORM_BASE_URL` to their engine's URL (or route it on the same
+hostname and leave the var unset). The hosted route is defined in
+`wrangler.centrst-mcp.toml`; `mcp/server.json` is the MCP registry manifest.
+
 ## Install code
 
 Every route serves ready-to-install, accessible form code with its endpoint
