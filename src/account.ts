@@ -7,6 +7,7 @@ import {
   unindexStoredRoute,
 } from './routes';
 import type { Env, StoredRouteRecord } from './types';
+import { refreshVerifiedRoute } from './verification';
 
 const MAX_ACCOUNT_EMAILS = 10;
 const encoder = new TextEncoder();
@@ -108,7 +109,7 @@ export async function listAccountRoutes(request: Request, env: Env): Promise<Res
         await unindexStoredRoute(env, indexedOwnerId, formId);
         return null;
       }
-      return record;
+      return refreshVerifiedRoute(env, record);
     }),
   );
   const routes = resolved
