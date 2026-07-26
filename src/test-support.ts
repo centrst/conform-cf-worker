@@ -35,9 +35,11 @@ export function executionContext() {
 export function quotaNamespace(
   reservation: QuotaReservation,
   requests: string[],
+  names?: string[],
 ): DurableObjectNamespace {
   return {
-    idFromName() {
+    idFromName(name: string) {
+      names?.push(name);
       return {} as DurableObjectId;
     },
     get() {
@@ -90,6 +92,13 @@ export function routeNamespace(records: Map<string, StoredRouteRecord>): Durable
             records.set(formId, active);
             return Response.json(active);
           }
+          if (url.pathname === '/delete' && init?.method === 'POST') {
+            if (!records.has(formId)) {
+              return Response.json({ error: 'Route not found' }, { status: 404 });
+            }
+            records.delete(formId);
+            return Response.json({ deleted: true });
+          }
           return Response.json({ error: 'Not found' }, { status: 404 });
         },
       } as DurableObjectStub;
@@ -102,6 +111,7 @@ export function baseEnv(options?: {
   send?: (message: EmailMessageBuilder) => Promise<{ messageId: string }>;
   requests?: string[];
   routes?: Map<string, StoredRouteRecord>;
+  quotaNames?: string[];
 }): Env {
   const requests = options?.requests ?? [];
   const routes = options?.routes ?? new Map<string, StoredRouteRecord>();
@@ -121,6 +131,7 @@ export function baseEnv(options?: {
         month: '2026-07',
       },
       requests,
+      options?.quotaNames,
     ),
     ROUTES: routeNamespace(routes),
     DELIVERY_MODE: 'verified',
@@ -146,6 +157,8 @@ export async function installRoute(
     email?: string;
     status?: StoredRouteRecord['status'];
     destinationId?: string;
+    quotaKey?: string;
+    requestHash?: string;
   },
 ): Promise<string> {
   const formId = options?.formId ?? TEST_FORM_ID;
@@ -166,6 +179,8 @@ export async function installRoute(
     status: options?.status ?? 'active',
     destinationId: options?.destinationId,
     createdAt: new Date().toISOString(),
+    quotaKey: options?.quotaKey,
+    requestHash: options?.requestHash,
   });
   return formId;
 }

@@ -40,13 +40,23 @@ export async function sendSubmissionEmail(
     format: 'text' | 'json';
     replyTo?: string;
     subject?: string;
+    test?: boolean;
+    testNonce?: string;
   },
 ): Promise<void> {
+  const baseSubject = safeSubject(
+    options.subject || `New submission from ${route.formName}`,
+  );
+  let text = submissionText(route.formName, fields);
+  if (options.test) {
+    text += '\n\nThis is a test submission sent to verify delivery.';
+    if (options.testNonce) text += `\nTest reference: ${options.testNonce}`;
+  }
   const message: EmailMessageBuilder = {
     to: route.email,
     from: sender(env),
-    subject: safeSubject(options.subject || `New submission from ${route.formName}`),
-    text: submissionText(route.formName, fields),
+    subject: options.test ? safeSubject(`[Test] ${baseSubject}`) : baseSubject,
+    text,
   };
   if (options.replyTo) message.replyTo = options.replyTo;
   if (options.format === 'json') message.attachments = [jsonAttachment(fields)];

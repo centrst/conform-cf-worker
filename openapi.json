@@ -60,7 +60,16 @@
       "post": {
         "operationId": "createRoute",
         "summary": "Create a form endpoint",
-        "description": "Creates a permanent `/f/cfm_…` endpoint that delivers to the given inbox. Aliases are labels, deliberately not unique: posting the same email and alias twice creates two distinct form endpoints. All forms delivering to the same inbox share one monthly allowance. If the inbox is not yet verified, the response is `202` with `next_action.type = \"human_verification\"` — install the form anyway (the endpoint URL is stable) and poll `status_url` until `status` is `active`.",
+        "description": "Creates a permanent `/f/cfm_…` endpoint that delivers to the given inbox. Aliases are labels, deliberately not unique: posting the same email and alias twice creates two distinct form endpoints. All forms delivering to the same inbox identity share one monthly allowance (`+tags`, Gmail dots, and provider domain aliases count as the same inbox). If the inbox is not yet verified, the response is `202` with `next_action.type = \"human_verification\"` — install the form anyway (the endpoint URL is stable) and poll `status_url` until `status` is `active`. Send an `Idempotency-Key` header to make creation replay-safe: retrying with the same key and body returns the SAME form endpoint (`200`, `replayed: true`, current status) instead of minting a new one; the same key with a different body is rejected with `422 idempotency_key_conflict`. Treat idempotency keys and the returned `management_token` as secrets. A `delivery` property is reserved for future webhook delivery and is rejected with `delivery_config_unsupported` until it ships.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "description": "1-200 printable ASCII characters, scoped per destination inbox. Same key + same body → same form endpoint forever."
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -70,20 +79,32 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "Idempotent replay: this Idempotency-Key already created a route. The body reflects the route's CURRENT state (`replayed: true`) and re-reveals its `management_token`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
+            }
+          },
           "201": {
-            "description": "The inbox is already verified; the endpoint is active immediately.",
+            "description": "The inbox is already verified; the endpoint is active immediately. Includes the route's `management_token` — shown here and on idempotent replays only.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
             }
           },
           "202": {
-            "description": "Endpoint reserved; the destination inbox must confirm a verification email before delivery starts.",
+            "description": "Endpoint reserved; the destination inbox must confirm a verification email before delivery starts. Includes the route's `management_token`.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/RouteResource" } }
             }
           },
           "400": {
-            "description": "`invalid_json`, `invalid_email`, or `invalid_alias`.",
+            "description": "`invalid_json`, `invalid_email`, `invalid_alias`, `invalid_idempotency_key`, or `delivery_config_unsupported`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "422": {
+            "description": "`idempotency_key_conflict` — this key was already used with a different request body.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -214,13 +235,64 @@
             }
           }
         }
+      },
+      "delete": {
+        "operationId": "deleteRoute",
+        "summary": "Delete a form endpoint",
+        "description": "Hard-deletes the route, destroying its encrypted destination. Requires the route's `management_token` (returned once at creation, re-revealed on idempotent replay) as `Authorization: Bearer <token>`. Use this to clean up misprovisioned routes.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <management_token>`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Route deleted; subsequent status checks return 404.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["success", "status", "form_id"],
+                  "properties": {
+                    "success": { "const": true },
+                    "status": { "const": "deleted" },
+                    "form_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`management_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "403": {
+            "description": "`management_token_invalid` — the token is malformed or does not match this route.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
       }
     },
     "/f/{formId}": {
       "post": {
         "operationId": "submitForm",
         "summary": "Submit a form",
-        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `redirect`/`_redirect` are reserved (redirect support is planned, currently ignored); `access_key` is reserved for compatibility. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
+        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` is reserved for compatibility. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
         "parameters": [{ "$ref": "#/components/parameters/FormId" }],
         "requestBody": {
           "required": true,
@@ -238,15 +310,20 @@
         },
         "responses": {
           "200": {
-            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured.",
+            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured; `test`/`echo` appear for `_test` submissions. HTML-accepting clients receive a result page instead.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/SubmissionAccepted" }
-              }
+              },
+              "text/html": {}
             }
           },
+          "303": {
+            "description": "Delivered, redirecting to the submission's `_redirect` URL.",
+            "headers": { "Location": { "schema": { "type": "string", "format": "uri" } } }
+          },
           "400": {
-            "description": "`submission_empty`, `invalid_json`, or `file_uploads_unsupported`.",
+            "description": "`submission_empty`, `invalid_json`, `invalid_redirect_url`, or `file_uploads_unsupported`.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -309,6 +386,12 @@
           "invalid_json",
           "invalid_email",
           "invalid_alias",
+          "invalid_idempotency_key",
+          "idempotency_key_conflict",
+          "delivery_config_unsupported",
+          "invalid_redirect_url",
+          "management_token_required",
+          "management_token_invalid",
           "rate_limited",
           "verified_destination_capacity",
           "route_not_found",
@@ -422,6 +505,14 @@
             "format": "date-time",
             "description": "Arbitrary delivery mode only: when the emailed verification token expires."
           },
+          "management_token": {
+            "type": "string",
+            "description": "Bearer credential for DELETE. Returned at creation and on idempotent replay only — treat as a secret and store it."
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "True when this response is an idempotent replay reflecting the route's current state."
+          },
           "message": { "type": "string" },
           "next_action": { "$ref": "#/components/schemas/NextAction" }
         },
@@ -433,6 +524,14 @@
         "properties": {
           "success": { "const": true },
           "message": { "type": "string" },
+          "test": {
+            "type": "boolean",
+            "description": "True for delivered `_test` submissions. Absent on a test request means it was spam-filtered."
+          },
+          "echo": {
+            "type": ["string", "null"],
+            "description": "The non-boolean `_test` value, echoed back as machine-checkable proof."
+          },
           "used": { "type": "integer", "description": "Present when a monthly limit is configured." },
           "limit": { "type": "integer", "description": "Present when a monthly limit is configured." }
         },
@@ -462,11 +561,11 @@
     "invalid_json": { "status": 400, "retryable": false },
     "invalid_email": { "status": 400, "retryable": false },
     "invalid_alias": { "status": 400, "retryable": false },
-    "invalid_idempotency_key": { "status": 400, "retryable": false, "planned": true },
-    "idempotency_key_conflict": { "status": 422, "retryable": false, "planned": true },
-    "delivery_config_unsupported": { "status": 400, "retryable": false, "planned": true },
+    "invalid_idempotency_key": { "status": 400, "retryable": false },
+    "idempotency_key_conflict": { "status": 422, "retryable": false },
+    "delivery_config_unsupported": { "status": 400, "retryable": false },
     "invalid_webhook_url": { "status": 400, "retryable": false, "planned": true },
-    "invalid_redirect_url": { "status": 400, "retryable": false, "planned": true },
+    "invalid_redirect_url": { "status": 400, "retryable": false },
     "unknown_framework": { "status": 400, "retryable": false, "planned": true },
     "rate_limited": { "status": 429, "retryable": true },
     "verified_destination_capacity": { "status": 503, "retryable": false },
@@ -476,8 +575,8 @@
     "verification_token_expired": { "status": 410, "retryable": false },
     "verification_mismatch": { "status": 409, "retryable": false },
     "verification_unavailable": { "status": 404, "retryable": false },
-    "management_token_required": { "status": 401, "retryable": false, "planned": true },
-    "management_token_invalid": { "status": 403, "retryable": false, "planned": true },
+    "management_token_required": { "status": 401, "retryable": false },
+    "management_token_invalid": { "status": 403, "retryable": false },
     "submission_empty": { "status": 400, "retryable": false },
     "submission_too_large": { "status": 413, "retryable": false },
     "unsupported_media_type": { "status": 415, "retryable": false },

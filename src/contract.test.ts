@@ -131,6 +131,84 @@ describe('every active error code is emitted as its documented envelope', () => 
         ),
     },
     {
+      code: 'invalid_idempotency_key',
+      run: () => {
+        const request = new Request('https://api.conform.test/v1/routes', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Idempotency-Key': 'a'.repeat(201),
+          },
+          body: JSON.stringify({ email: 'owner@example.com', alias: 'Contact' }),
+        });
+        return fetchWorker(request, baseEnv());
+      },
+    },
+    {
+      code: 'idempotency_key_conflict',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = arbitraryEnv(routes);
+        const create = (alias: string) =>
+          fetchWorker(
+            new Request('https://api.conform.test/v1/routes', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Idempotency-Key': 'agent-key-1',
+              },
+              body: JSON.stringify({ email: 'owner@example.com', alias }),
+            }),
+            env,
+          );
+        await create('Contact');
+        return create('Different');
+      },
+    },
+    {
+      code: 'delivery_config_unsupported',
+      run: () =>
+        fetchWorker(
+          post(
+            '/v1/routes',
+            JSON.stringify({ email: 'owner@example.com', alias: 'Contact', delivery: {} }),
+          ),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'invalid_redirect_url',
+      run: () =>
+        fetchWorker(
+          post(
+            `/f/${TEST_FORM_ID}`,
+            JSON.stringify({ message: 'x', _redirect: 'javascript:alert(1)' }),
+          ),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'management_token_required',
+      run: () =>
+        fetchWorker(
+          new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}`, {
+            method: 'DELETE',
+          }),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'management_token_invalid',
+      run: () =>
+        fetchWorker(
+          new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}`, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer garbage' },
+          }),
+          baseEnv(),
+        ),
+    },
+    {
       code: 'rate_limited',
       run: () => {
         const env: Env = {

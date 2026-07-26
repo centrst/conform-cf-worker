@@ -37,6 +37,7 @@ export interface Env {
 
   DELIVERY_MODE?: DeliveryMode;
   MONTHLY_LIMIT?: string;
+  QUOTA_IDENTITY_EXCEPTIONS?: string;
   MAX_REQUEST_SIZE?: string;
   FROM_EMAIL?: string;
   FROM_NAME?: string;
@@ -71,6 +72,14 @@ export interface PendingRoutePayload {
   expiresAt: number;
 }
 
+export interface ManageTokenPayload {
+  kind: 'manage';
+  version: 1;
+  ownerId: string;
+  routeId: string;
+  issuedAt: number;
+}
+
 export interface QuotaReservation {
   allowed: boolean;
   used: number;
@@ -89,4 +98,8 @@ export interface StoredRouteRecord {
   status: 'pending' | 'active';
   destinationId?: string;
   createdAt: string;
+  /** Fingerprint of the creation request when an Idempotency-Key was used. */
+  requestHash?: string;
+  /** Opaque billing-identity hash; falls back to ownerId for legacy rows. */
+  quotaKey?: string;
 }

@@ -296,9 +296,50 @@ Reserved optional fields:
 | `_subject` or `subject` | Email subject |
 | `_format=json` or `format=json` | Attach the fields as `submission.json` |
 | `_gotcha` or `botcheck` | Honeypot; a non-empty value is silently discarded |
+| `_redirect` or `redirect` | Absolute `https://` URL to send the visitor to after delivery (`303 See Other`) |
+| `_test` | Marks a test submission: delivered for real with a `[Test]` subject, consumes one quota unit, and the response carries `test: true` plus an `echo` of any non-boolean value |
 
-JSON, URL-encoded, and multipart text fields are accepted. File uploads are
-rejected. The default request-body limit is 100 KiB.
+Browser form posts (requests accepting `text/html`) receive a minimal HTML
+result page instead of JSON. JSON, URL-encoded, and multipart text fields are
+accepted. File uploads are rejected. The default request-body limit is 100 KiB.
+
+## Idempotent creation and route management
+
+Send an `Idempotency-Key` header (1–200 printable ASCII characters, scoped per
+destination inbox) with `POST /v1/routes` to make provisioning replay-safe:
+the same key and body always resolve to the same form endpoint. A retry
+returns `200` with `replayed: true` and the route's *current* status — a
+replay after the inbox was verified reports `active`. The same key with a
+different body is rejected with `422 idempotency_key_conflict`.
+
+Creation responses include a `management_token` (re-revealed on idempotent
+replays; treat it as a secret). It authorizes exactly one operation:
+
+```sh
+curl -X DELETE https://forms.example.com/v1/routes/cfm_… \
+  --header 'Authorization: Bearer <management_token>'
+```
+
+Deletion is a hard delete — the encrypted destination is destroyed and the
+form ID answers 404 afterwards. Routes that are never verified are deleted
+automatically after 30 days.
+
+## Quota identity
+
+One inbox has one monthly allowance. The quota key is derived from the
+address's *billing identity* (`src/email-identity.ts`): `+suffixes` are
+stripped on every domain, dots are insignificant on Gmail,
+`googlemail.com`/`protonmail.com`/`pm.me` fold into their canonical domains,
+and `-suffixes` are stripped on Yahoo domains only. Delivery, verification,
+and route ownership always use the exact address — identity rules never
+change where mail goes.
+
+If two genuinely distinct mailboxes are ever merged by these rules (for
+example a corporate system where `dev+ops@` is a real mailbox), the operator
+can exempt the exact address: `yarn hash-email dev+ops@corp.example` prints an
+opaque hash to add to the `QUOTA_IDENTITY_EXCEPTIONS` var — no plaintext
+address ever appears in configuration. The exemption applies to routes created
+after the change.
 
 ## Monthly quota implementation
 

@@ -12,7 +12,10 @@ const INTERNAL_FIELDS = new Set([
   '_subject',
   'format',
   '_format',
+  '_test',
 ]);
+
+const TEST_TRUE_VALUES = new Set(['true', '1', 'yes']);
 
 export interface ParsedSubmission {
   allFields: SubmissionFields;
@@ -21,6 +24,9 @@ export interface ParsedSubmission {
   replyTo?: string;
   format: 'text' | 'json';
   spam: boolean;
+  test: boolean;
+  testNonce?: string;
+  redirect?: string;
 }
 
 function addField(fields: SubmissionFields, key: string, value: string): void {
@@ -124,6 +130,9 @@ export async function parseSubmission(
   const rawReplyTo = valueAsString(fields.email);
   const rawFormat =
     valueAsString(allFields._format) ?? valueAsString(allFields.format);
+  const rawTest = valueAsString(allFields._test)?.trim();
+  const rawRedirect =
+    valueAsString(allFields._redirect) ?? valueAsString(allFields.redirect);
 
   return {
     allFields,
@@ -136,6 +145,12 @@ export async function parseSubmission(
       rawReplyTo && isValidEmail(rawReplyTo.trim()) ? rawReplyTo.trim() : undefined,
     format: rawFormat?.toLowerCase() === 'json' ? 'json' : 'text',
     spam: Boolean(spamValue?.trim()),
+    test: Boolean(rawTest),
+    testNonce:
+      rawTest && !TEST_TRUE_VALUES.has(rawTest.toLowerCase())
+        ? cleanHeader(rawTest, 64)
+        : undefined,
+    redirect: cleanHeader(rawRedirect, 2048),
   };
 }
 
