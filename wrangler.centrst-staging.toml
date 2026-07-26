@@ -1,22 +1,29 @@
 name = "centrst-conform-worker-staging"
+account_id = "c038d1ab6b5acb96e4c34267d80c1c19"
 main = "src/index.ts"
 compatibility_date = "2026-07-21"
 keep_vars = true
 workers_dev = true
 
-# Staging for the Centrst-hosted service: the smoke-test loop for release
+# Staging runs in the dedicated Centrst Cloudflare account. It is the
+# smoke-test loop for release
 # verification and the target for the conform-bench agent benchmark. Runs
-# DELIVERY_MODE=arbitrary (set in the dashboard) so verification emails come
+# DELIVERY_MODE=arbitrary so verification emails come
 # from the Worker itself and an IMAP harness can confirm them without touching
 # the production Cloudflare destination-address allowance.
 #
-# Like wrangler.centrst.toml, runtime values live in the Cloudflare dashboard.
 # Deploy manually: npx wrangler deploy --config wrangler.centrst-staging.toml
+
+[vars]
+DELIVERY_MODE = "arbitrary"
+FROM_EMAIL = "forms@centrst.com"
+FROM_NAME = "Centrist conForm"
 
 [secrets]
 required = [
   "ROUTE_TOKEN_SECRET",
   "OWNER_HASH_SECRET",
+  "ACCOUNT_LOOKUP_SECRET",
 ]
 
 [[send_email]]
