@@ -159,17 +159,19 @@ export async function installRoute(
     destinationId?: string;
     quotaKey?: string;
     requestHash?: string;
+    delivery?: RouteTokenPayload['delivery'];
   },
 ): Promise<string> {
   const formId = options?.formId ?? TEST_FORM_ID;
   const route: RouteTokenPayload = {
     kind: 'route',
-    version: 1,
+    version: options?.delivery ? 2 : 1,
     ownerId: options?.ownerId ?? 'opaque-owner',
     routeId: formId,
     email: options?.email ?? 'owner@example.com',
     formName: options?.alias ?? 'Contact',
     issuedAt: Date.now(),
+    ...(options?.delivery ? { delivery: options.delivery } : {}),
   };
   records.set(formId, {
     formId,

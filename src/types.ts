@@ -53,25 +53,40 @@ export interface Env {
   CLOUDFLARE_API_TOKEN?: string;
 }
 
+export type RouteDeliveryMode = 'email' | 'webhook' | 'both';
+
+export interface WebhookDeliveryConfig {
+  url: string;
+  secret: string;
+}
+
+export interface RouteDeliveryConfig {
+  mode: RouteDeliveryMode;
+  webhook?: WebhookDeliveryConfig;
+}
+
 export interface RouteTokenPayload {
   kind: 'route';
-  version: 1;
+  version: 1 | 2;
   ownerId: string;
   routeId: string;
   email: string;
   formName: string;
   issuedAt: number;
+  /** Present (version 2) when the route also or exclusively delivers by webhook. */
+  delivery?: RouteDeliveryConfig;
 }
 
 export interface PendingRoutePayload {
   kind: 'pending';
-  version: 1;
+  version: 1 | 2;
   ownerId: string;
   routeId: string;
   email: string;
   formName: string;
   issuedAt: number;
   expiresAt: number;
+  delivery?: RouteDeliveryConfig;
 }
 
 export interface ManageTokenPayload {
