@@ -73,7 +73,11 @@ export class FormRoute implements DurableObject {
 
   private async destroy(): Promise<void> {
     await this.ctx.storage.deleteAlarm();
-    await this.ctx.storage.deleteAll();
+    // Keep the schema intact for this warm Durable Object instance. Cloudflare
+    // can route another request to the same instance after deleteAll(), but the
+    // constructor does not rerun, leaving read() with no route table and
+    // turning the documented post-delete 404 into a 500.
+    this.sql.exec(`DELETE FROM route WHERE singleton = 1`);
   }
 
   async alarm(): Promise<void> {
