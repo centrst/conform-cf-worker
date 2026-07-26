@@ -1,4 +1,5 @@
 name = "centrst-conform-worker"
+account_id = "e4af626f1f243dc14272f6c8b8df23ea"
 main = "src/index.ts"
 compatibility_date = "2026-07-21"
 keep_vars = true

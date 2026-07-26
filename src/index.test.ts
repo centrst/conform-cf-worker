@@ -35,6 +35,7 @@ describe('conform worker', () => {
         'Cloudflare destination id',
       ],
       quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
+      account_form_index: ['opaque inbox id', 'form ids', 'created timestamps'],
       workers_kv: false,
     });
   });

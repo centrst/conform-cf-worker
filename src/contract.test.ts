@@ -102,9 +102,11 @@ describe('error taxonomy sync', () => {
         '/.well-known/conform.json',
         '/llms.txt',
         '/v1/install',
+        '/v1/account/routes',
         '/v1/routes',
         '/v1/routes/verify',
         '/v1/routes/{formId}',
+        '/v1/routes/{formId}/claim',
         '/v1/routes/{formId}/install',
         '/f/{formId}',
       ].sort(),
@@ -253,6 +255,36 @@ describe('every active error code is emitted as its documented envelope', () => 
           new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}`, {
             method: 'DELETE',
             headers: { Authorization: 'Bearer garbage' },
+          }),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'account_lookup_unauthorized',
+      run: () =>
+        fetchWorker(
+          new Request('https://api.conform.test/v1/account/routes', {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer wrong',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ emails: ['owner@example.com'] }),
+          }),
+          { ...baseEnv(), ACCOUNT_LOOKUP_SECRET: 'expected' },
+        ),
+    },
+    {
+      code: 'account_lookup_unavailable',
+      run: () =>
+        fetchWorker(
+          new Request('https://api.conform.test/v1/account/routes', {
+            method: 'POST',
+            headers: {
+              Authorization: 'Bearer configured-elsewhere',
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ emails: ['owner@example.com'] }),
           }),
           baseEnv(),
         ),

@@ -46,6 +46,8 @@ export interface Env {
   SOURCE_COMMIT?: string;
   DOCS_URL?: string;
   MCP_URL?: string;
+  /** Optional secret used by a trusted account broker to list routes by verified email. */
+  ACCOUNT_LOOKUP_SECRET?: string;
 
   ROUTE_TOKEN_SECRET?: string;
   OWNER_HASH_SECRET?: string;

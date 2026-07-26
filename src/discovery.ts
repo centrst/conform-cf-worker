@@ -29,10 +29,20 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
         path: '/v1/routes',
         idempotency: 'Idempotency-Key header',
       },
+      account_forms: {
+        method: 'POST',
+        path: '/v1/account/routes',
+        auth: 'Bearer ACCOUNT_LOOKUP_SECRET (optional trusted broker interface)',
+      },
       form_status: { method: 'GET', path: '/v1/routes/{form_id}' },
       delete_form: {
         method: 'DELETE',
         path: '/v1/routes/{form_id}',
+        auth: 'Bearer management_token',
+      },
+      claim_existing_form: {
+        method: 'POST',
+        path: '/v1/routes/{form_id}/claim',
         auth: 'Bearer management_token',
       },
       install_code: {
@@ -73,6 +83,7 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
         'Cloudflare destination id',
       ],
       quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
+      account_form_index: ['opaque inbox id', 'form ids', 'created timestamps'],
       workers_kv: false,
     },
   };
@@ -102,6 +113,9 @@ Key facts for agents
   the response echoes test:true as proof. A test response WITHOUT test:true means
   the submission was spam-filtered — never populate the hidden _gotcha field.
 - Clean up: DELETE /v1/routes/{form_id} with "Authorization: Bearer <management_token>".
+- Optional account dashboards can list form metadata by verified inbox through the
+  operator-authenticated POST /v1/account/routes interface. Destination plaintext,
+  management tokens, and submissions are never returned.
 - Quota: one inbox = one monthly allowance${limit > 0 ? ` (${limit} deliveries/month)` : ''} —
   +tags, Gmail dots, and provider domain aliases count as the same inbox.
 - Every error is JSON: {success:false, error:<stable_code>, message, retryable}.

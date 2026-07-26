@@ -1,4 +1,5 @@
 import openapiSpec from '../openapi.json';
+import { listAccountRoutes } from './account';
 import {
   DestinationCapacityError,
   destinationAddressStatus,
@@ -42,6 +43,8 @@ import {
   deleteStoredRoute,
   FormRoute,
   getStoredRoute,
+  indexStoredRoute,
+  unindexStoredRoute,
 } from './routes';
 import { parseSubmission } from './submission';
 import {
@@ -194,7 +197,10 @@ async function storeNewRoute(
       requestHash: params.requestHash,
       quotaKey: params.quotaKey,
     };
-    if (await createStoredRoute(env, record)) return record;
+    if (await createStoredRoute(env, record)) {
+      await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
+      return record;
+    }
     if (params.formId) return null;
   }
   throw new Error('Could not allocate a unique form ID');
@@ -234,6 +240,7 @@ async function replayRoute(
     );
   }
   const record = await refreshVerifiedRoute(env, existing);
+  await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
   const payload = await openToken<RouteTokenPayload>(
     record.encryptedRoute,
     'route',
@@ -581,6 +588,7 @@ async function routeStatus(
   const found = await getStoredRoute(env, formId);
   if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
+  await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
   const origin = new URL(request.url).origin;
   return json(
     routeResource({
@@ -598,12 +606,16 @@ async function routeStatus(
   );
 }
 
-async function deleteRoute(request: Request, env: Env, formId: string): Promise<Response> {
+async function managedRoute(
+  request: Request,
+  env: Env,
+  formId: string,
+): Promise<StoredRouteRecord> {
   const authorization = request.headers.get('Authorization');
   if (!authorization?.startsWith('Bearer ')) {
     throw new ApiError(
       'management_token_required',
-      'Deleting a route requires its management token as a Bearer Authorization header',
+      'Managing a route requires its management token as a Bearer Authorization header',
     );
   }
   let payload: ManageTokenPayload;
@@ -630,7 +642,19 @@ async function deleteRoute(request: Request, env: Env, formId: string): Promise<
       'The management token does not match this route',
     );
   }
+  return record;
+}
+
+async function claimRoute(request: Request, env: Env, formId: string): Promise<Response> {
+  const record = await managedRoute(request, env, formId);
+  await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
+  return json({ success: true, status: 'indexed', form_id: formId });
+}
+
+async function deleteRoute(request: Request, env: Env, formId: string): Promise<Response> {
+  const record = await managedRoute(request, env, formId);
   await deleteStoredRoute(env, formId);
+  await unindexStoredRoute(env, record.ownerId, formId);
   return json({ success: true, status: 'deleted', form_id: formId });
 }
 
@@ -694,6 +718,7 @@ async function submit(
   const found = await getStoredRoute(env, formId);
   if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
+  await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
   if (record.status !== 'active') {
     const origin = new URL(request.url).origin;
     throw new ApiError('inbox_not_verified', 'This inbox has not been verified yet.', {
@@ -864,6 +889,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
     return createRoute(request, env);
   }
 
+  if (url.pathname === '/v1/account/routes') {
+    if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
+    return listAccountRoutes(request, env);
+  }
+
   if (url.pathname === '/v1/routes/verify') {
     if (request.method !== 'GET' && request.method !== 'POST') {
       return methodNotAllowed('GET, POST, OPTIONS');
@@ -876,6 +906,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 
   if (url.pathname.startsWith('/v1/routes/')) {
     const rest = decodeURIComponent(url.pathname.slice('/v1/routes/'.length));
+    if (rest.endsWith('/claim')) {
+      const formId = rest.slice(0, -'/claim'.length);
+      if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
+      return claimRoute(request, env, formId);
+    }
     if (rest.endsWith('/install')) {
       const formId = rest.slice(0, -'/install'.length);
       if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');

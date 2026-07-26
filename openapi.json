@@ -139,6 +139,121 @@
         }
       }
     },
+    "/v1/account/routes": {
+      "post": {
+        "operationId": "listAccountRoutes",
+        "summary": "List routes for verified account emails",
+        "description": "Optional operator interface for a trusted account broker such as the Centrst dashboard. The broker authenticates the user, supplies only email addresses it has verified for that account, and authenticates here with the deployment's `ACCOUNT_LOOKUP_SECRET`. The response contains route metadata only: never destination plaintext, management tokens, webhook secrets, or submission content.",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <ACCOUNT_LOOKUP_SECRET>`"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["emails"],
+                "properties": {
+                  "emails": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": { "type": "string", "format": "email" }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Routes whose opaque owner identity matches one of the verified emails.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AccountRouteList" } }
+            }
+          },
+          "400": {
+            "description": "`invalid_json` or `invalid_email`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "401": {
+            "description": "`account_lookup_unauthorized`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "503": {
+            "description": "`account_lookup_unavailable` when this optional operator interface is not configured.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/{formId}/claim": {
+      "post": {
+        "operationId": "claimRouteForAccountListing",
+        "summary": "Index an existing route for account discovery",
+        "description": "Adds a route created before account discovery was enabled to its opaque owner index. Requires the route's management token and does not attach an account identifier or store destination plaintext.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <management_token>`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Route indexed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["success", "status", "form_id"],
+                  "properties": {
+                    "success": { "const": true },
+                    "status": { "const": "indexed" },
+                    "form_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`management_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "403": {
+            "description": "`management_token_invalid`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
     "/v1/routes": {
       "post": {
         "operationId": "createRoute",
@@ -501,6 +616,8 @@
           "unknown_framework",
           "management_token_required",
           "management_token_invalid",
+          "account_lookup_unauthorized",
+          "account_lookup_unavailable",
           "rate_limited",
           "verified_destination_capacity",
           "route_not_found",
@@ -655,6 +772,30 @@
         },
         "additionalProperties": false
       },
+      "AccountRouteList": {
+        "type": "object",
+        "required": ["success", "routes"],
+        "properties": {
+          "success": { "const": true },
+          "routes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["form_id", "alias", "status", "endpoint", "status_url", "created_at"],
+              "properties": {
+                "form_id": { "type": "string", "pattern": "^cfm_[A-HJ-NP-Z2-9]{16}$" },
+                "alias": { "type": "string" },
+                "status": { "type": "string", "enum": ["active", "pending_verification"] },
+                "endpoint": { "type": "string", "format": "uri" },
+                "status_url": { "type": "string", "format": "uri" },
+                "created_at": { "type": "string", "format": "date-time" }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "SubmissionAccepted": {
         "type": "object",
         "required": ["success", "message"],
@@ -747,6 +888,8 @@
     "verification_unavailable": { "status": 404, "retryable": false },
     "management_token_required": { "status": 401, "retryable": false },
     "management_token_invalid": { "status": 403, "retryable": false },
+    "account_lookup_unauthorized": { "status": 401, "retryable": false },
+    "account_lookup_unavailable": { "status": 503, "retryable": false },
     "submission_empty": { "status": 400, "retryable": false },
     "submission_too_large": { "status": 413, "retryable": false },
     "unsupported_media_type": { "status": 415, "retryable": false },

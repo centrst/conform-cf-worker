@@ -28,6 +28,12 @@ export class FormRoute implements DurableObject {
         created_at TEXT NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS owner_route (
+        form_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+      )
+    `);
     const columns = this.sql.exec<{ name: string }>(`PRAGMA table_info(route)`).toArray();
     if (!columns.some((column) => column.name === 'request_hash')) {
       this.sql.exec(`ALTER TABLE route ADD COLUMN request_hash TEXT`);
@@ -142,6 +148,36 @@ export class FormRoute implements DurableObject {
       return json({ deleted: true });
     }
 
+    if (request.method === 'GET' && url.pathname === '/owner-routes') {
+      const routes = this.sql
+        .exec<{ form_id: string; created_at: string }>(
+          `SELECT form_id, created_at
+           FROM owner_route
+           ORDER BY created_at DESC`,
+        )
+        .toArray()
+        .map((row) => ({ formId: row.form_id, createdAt: row.created_at }));
+      return json({ routes });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/owner-routes/add') {
+      const route = (await request.json()) as { formId: string; createdAt: string };
+      this.sql.exec(
+        `INSERT INTO owner_route (form_id, created_at)
+         VALUES (?1, ?2)
+         ON CONFLICT(form_id) DO UPDATE SET created_at = excluded.created_at`,
+        route.formId,
+        route.createdAt,
+      );
+      return json({ indexed: true });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/owner-routes/remove') {
+      const route = (await request.json()) as { formId: string };
+      this.sql.exec(`DELETE FROM owner_route WHERE form_id = ?1`, route.formId);
+      return json({ removed: true });
+    }
+
     return json({ error: 'Not found' }, 404);
   }
 }
@@ -197,4 +233,55 @@ export async function deleteStoredRoute(env: Env, formId: string): Promise<boole
   if (response.status === 404) return false;
   if (!response.ok) throw new Error('Route deletion failed');
   return true;
+}
+
+function ownerRouteStub(env: Env, ownerId: string): DurableObjectStub {
+  return env.ROUTES.get(env.ROUTES.idFromName(`owner:${ownerId}`));
+}
+
+export async function indexStoredRoute(
+  env: Env,
+  ownerId: string,
+  formId: string,
+  createdAt: string,
+): Promise<void> {
+  const response = await ownerRouteStub(env, ownerId).fetch(
+    'https://route.internal/owner-routes/add',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formId, createdAt }),
+    },
+  );
+  if (!response.ok) throw new Error('Route indexing failed');
+}
+
+export async function listStoredRouteIds(
+  env: Env,
+  ownerId: string,
+): Promise<Array<{ formId: string; createdAt: string }>> {
+  const response = await ownerRouteStub(env, ownerId).fetch(
+    'https://route.internal/owner-routes',
+  );
+  if (!response.ok) throw new Error('Route index lookup failed');
+  const body = (await response.json()) as {
+    routes: Array<{ formId: string; createdAt: string }>;
+  };
+  return body.routes;
+}
+
+export async function unindexStoredRoute(
+  env: Env,
+  ownerId: string,
+  formId: string,
+): Promise<void> {
+  const response = await ownerRouteStub(env, ownerId).fetch(
+    'https://route.internal/owner-routes/remove',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ formId }),
+    },
+  );
+  if (!response.ok) throw new Error('Route index removal failed');
 }
