@@ -4,7 +4,10 @@ import {
   destinationAddressStatus,
   ensureDestinationAddress,
 } from './cloudflare-destinations';
+import { deliveryMode, maxRequestSize, monthlyLimit } from './config';
 import { nextActionFor, quotaResetsAt, routeResource } from './contract';
+import { discoveryDocument, llmsText } from './discovery';
+import { genericInstall, routeInstall } from './install';
 import {
   deriveRouteId,
   isValidEmail,
@@ -18,7 +21,6 @@ import {
   sealToken,
 } from './crypto';
 import {
-  publicUrl,
   routeStatusUrl,
   sendArbitraryVerification,
   sendQuotaWarning,
@@ -43,7 +45,6 @@ import {
 } from './routes';
 import { parseSubmission } from './submission';
 import type {
-  DeliveryMode,
   Env,
   ManageTokenPayload,
   PendingRoutePayload,
@@ -57,20 +58,6 @@ export { openToken, ownerIdForEmail, sealToken } from './crypto';
 const ROUTE_TOKEN_TTL_SECONDS = 24 * 60 * 60;
 const MAX_FORM_NAME_LENGTH = 120;
 const IDEMPOTENCY_KEY_PATTERN = /^[\x20-\x7e]{1,200}$/u;
-
-function deliveryMode(env: Env): DeliveryMode {
-  return env.DELIVERY_MODE === 'arbitrary' ? 'arbitrary' : 'verified';
-}
-
-function monthlyLimit(env: Env): number {
-  const parsed = Number.parseInt(env.MONTHLY_LIMIT ?? '250', 10);
-  return Number.isFinite(parsed) ? Math.max(0, parsed) : 250;
-}
-
-function maxRequestSize(env: Env): number {
-  const parsed = Number.parseInt(env.MAX_REQUEST_SIZE ?? '102400', 10);
-  return Number.isFinite(parsed) ? Math.max(1024, parsed) : 102400;
-}
 
 function routePayload(
   email: string,
@@ -702,31 +689,6 @@ function methodNotAllowed(allow: string): Response {
   });
 }
 
-function descriptor(env: Env, origin: string): Response {
-  return json({
-    name: 'conform-cf-worker',
-    api_version: openapiSpec.info.version,
-    version: env.SOURCE_COMMIT || 'development',
-    source: env.SOURCE_URL || 'https://github.com/centrst/conform-cf-worker',
-    openapi_url: `${publicUrl(env, origin)}/openapi.json`,
-    delivery_mode: deliveryMode(env),
-    persistence: {
-      submission_fields: false,
-      destination_email_plaintext: false,
-      route: [
-        'form id',
-        'alias',
-        'opaque inbox id',
-        'encrypted destination',
-        'verification status',
-        'Cloudflare destination id',
-      ],
-      quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
-      workers_kv: false,
-    },
-  });
-}
-
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
@@ -742,14 +704,34 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
     });
   }
 
-  if (url.pathname === '/' || url.pathname === '/health') {
+  if (
+    url.pathname === '/' ||
+    url.pathname === '/health' ||
+    url.pathname === '/.well-known/conform.json'
+  ) {
     if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
-    return descriptor(env, url.origin);
+    return json(discoveryDocument(env, url.origin));
   }
 
   if (url.pathname === '/openapi.json') {
     if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
     return json(openapiSpec, 200, { 'Cache-Control': 'public, max-age=300' });
+  }
+
+  if (url.pathname === '/llms.txt') {
+    if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+    return new Response(llmsText(env, url.origin), {
+      headers: {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'public, max-age=300',
+      },
+    });
+  }
+
+  if (url.pathname === '/v1/install') {
+    if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+    return genericInstall(request);
   }
 
   if (url.pathname === '/v1/routes') {
@@ -768,9 +750,14 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
   }
 
   if (url.pathname.startsWith('/v1/routes/')) {
-    const formId = decodeURIComponent(url.pathname.slice('/v1/routes/'.length));
-    if (request.method === 'GET') return routeStatus(request, env, formId);
-    if (request.method === 'DELETE') return deleteRoute(request, env, formId);
+    const rest = decodeURIComponent(url.pathname.slice('/v1/routes/'.length));
+    if (rest.endsWith('/install')) {
+      const formId = rest.slice(0, -'/install'.length);
+      if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
+      return routeInstall(request, env, formId);
+    }
+    if (request.method === 'GET') return routeStatus(request, env, rest);
+    if (request.method === 'DELETE') return deleteRoute(request, env, rest);
     return methodNotAllowed('GET, DELETE, OPTIONS');
   }
 

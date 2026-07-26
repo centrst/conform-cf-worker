@@ -22,7 +22,7 @@ export const ERROR_TABLE = {
   delivery_config_unsupported: { status: 400, retryable: false },
   invalid_webhook_url: { status: 400, retryable: false, planned: true },
   invalid_redirect_url: { status: 400, retryable: false },
-  unknown_framework: { status: 400, retryable: false, planned: true },
+  unknown_framework: { status: 400, retryable: false },
   rate_limited: { status: 429, retryable: true },
   verified_destination_capacity: { status: 503, retryable: false },
   route_not_found: { status: 404, retryable: false },

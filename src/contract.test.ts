@@ -99,9 +99,13 @@ describe('error taxonomy sync', () => {
         '/',
         '/health',
         '/openapi.json',
+        '/.well-known/conform.json',
+        '/llms.txt',
+        '/v1/install',
         '/v1/routes',
         '/v1/routes/verify',
         '/v1/routes/{formId}',
+        '/v1/routes/{formId}/install',
         '/f/{formId}',
       ].sort(),
     );
@@ -184,6 +188,14 @@ describe('every active error code is emitted as its documented envelope', () => 
             `/f/${TEST_FORM_ID}`,
             JSON.stringify({ message: 'x', _redirect: 'javascript:alert(1)' }),
           ),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'unknown_framework',
+      run: () =>
+        fetchWorker(
+          new Request('https://api.conform.test/v1/install?framework=angular'),
           baseEnv(),
         ),
     },
