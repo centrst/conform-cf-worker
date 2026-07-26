@@ -23,6 +23,6 @@ jobs:
       - run: yarn test
       - run: npx wrangler deploy --dry-run
       - run: npx wrangler deploy --dry-run --config wrangler.centrst.toml
-      - run: npx wrangler deploy --dry-run --config wrangler.centrst-staging.toml
+      - run: npx wrangler deploy --dry-run --config wrangler.preview.toml
       - run: npx wrangler deploy --dry-run --config wrangler.mcp.toml
       - run: npx wrangler deploy --dry-run --config wrangler.centrst-mcp.toml

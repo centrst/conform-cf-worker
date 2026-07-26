@@ -230,16 +230,16 @@ npx wrangler versions upload --config wrangler.centrst.toml
 Runtime values and secrets are managed in the `centrst-conform-worker`
 dashboard. Do not use the generic `wrangler.toml` for this deployment.
 
-### Staging
+### Preview
 
-`wrangler.centrst-staging.toml` deploys `centrst-conform-worker-staging` to its
-`workers.dev` hostname. It is the release smoke-test loop and the target for
-the agent benchmark. Configure it in the dashboard with
-`DELIVERY_MODE = "arbitrary"` and a low `MONTHLY_LIMIT`, and leave `PUBLIC_URL`
-unset so endpoint URLs fall back to the request origin. Deploy manually:
+`wrangler.preview.toml` deploys `conform-preview` to its `workers.dev` hostname
+in the dedicated Centrst Cloudflare account. It is the release smoke-test loop
+and the target for the agent benchmark. It uses `DELIVERY_MODE = "arbitrary"`;
+leave `PUBLIC_URL` unset so endpoint URLs fall back to the request origin.
+Deploy manually:
 
 ```sh
-npx wrangler deploy --config wrangler.centrst-staging.toml
+npx wrangler deploy --config wrangler.preview.toml
 ```
 
 CI dry-runs all three configs so drift in any of them fails the pull request.
