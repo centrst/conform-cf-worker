@@ -153,8 +153,7 @@ export class FormRoute implements DurableObject {
         .exec<{ form_id: string; created_at: string }>(
           `SELECT form_id, created_at
            FROM owner_route
-           ORDER BY created_at DESC
-           LIMIT 500`,
+           ORDER BY created_at DESC`,
         )
         .toArray()
         .map((row) => ({ formId: row.form_id, createdAt: row.created_at }));
