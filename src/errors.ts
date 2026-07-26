@@ -33,6 +33,8 @@ export const ERROR_TABLE = {
   verification_unavailable: { status: 404, retryable: false },
   management_token_required: { status: 401, retryable: false },
   management_token_invalid: { status: 403, retryable: false },
+  account_lookup_unauthorized: { status: 401, retryable: false },
+  account_lookup_unavailable: { status: 503, retryable: false },
   submission_empty: { status: 400, retryable: false },
   submission_too_large: { status: 413, retryable: false },
   unsupported_media_type: { status: 415, retryable: false },

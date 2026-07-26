@@ -83,6 +83,7 @@ The Durable Object itself is addressed by the opaque inbox ID.
 | Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
 | Alias | Stored with the route | Included when building the email | Included in the email |
 | Quota | Opaque ID, month, count and limit | Not included in the delivered email | Not sent |
+| Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent |
 
 No hosted service can honestly promise that its operator is technically unable
 to inspect plaintext processed by infrastructure the operator controls.
@@ -121,6 +122,26 @@ This uses the same `EMAIL` binding, form IDs, route records and quota system.
 Existing verified routes continue working; switching modes does not migrate or
 rewrite them. Arbitrary-recipient sends use Cloudflare's outbound-email
 allowance and then its per-email pricing.
+
+## Optional account dashboard
+
+Route creation never requires an account. Operators can additionally connect a
+trusted account dashboard by setting `ACCOUNT_LOOKUP_SECRET` in both services.
+The dashboard must authenticate its user and send only email addresses it has
+verified for that account to `POST /v1/account/routes`.
+
+The Worker derives the same opaque inbox IDs used at creation and returns form
+metadata only. It never returns or newly persists destination plaintext,
+management tokens, webhook secrets, or submission content. Routes created
+before this index existed can be added once with
+`POST /v1/routes/:form_id/claim` and their existing management token.
+
+`ACCOUNT_LOOKUP_SECRET` is optional and should be a separate random secret:
+
+```sh
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+npx wrangler secret put ACCOUNT_LOOKUP_SECRET
+```
 
 ## Deploy it yourself
 

@@ -55,20 +55,50 @@ export function quotaNamespace(
   } as unknown as DurableObjectNamespace;
 }
 
-export function routeNamespace(records: Map<string, StoredRouteRecord>): DurableObjectNamespace {
-  const formIds = new WeakMap<object, string>();
+export function routeNamespace(
+  records: Map<string, StoredRouteRecord>,
+  ownerRoutes: Map<string, Map<string, string>> = new Map(),
+): DurableObjectNamespace {
+  const objectNames = new WeakMap<object, string>();
   return {
-    idFromName(formId: string) {
+    idFromName(name: string) {
       const id = {} as DurableObjectId;
-      formIds.set(id as object, formId);
+      objectNames.set(id as object, name);
       return id;
     },
     get(id: DurableObjectId) {
-      const formId = formIds.get(id as object);
-      if (!formId) throw new Error('Unknown fake Durable Object ID');
+      const objectName = objectNames.get(id as object);
+      if (!objectName) throw new Error('Unknown fake Durable Object ID');
       return {
         async fetch(input: RequestInfo | URL, init?: RequestInit) {
           const url = new URL(typeof input === 'string' ? input : input.toString());
+          if (objectName.startsWith('owner:')) {
+            const ownerId = objectName.slice('owner:'.length);
+            const indexed = ownerRoutes.get(ownerId) ?? new Map<string, string>();
+            ownerRoutes.set(ownerId, indexed);
+            if (url.pathname === '/owner-routes' && (!init?.method || init.method === 'GET')) {
+              return Response.json({
+                routes: [...indexed]
+                  .map(([formId, createdAt]) => ({ formId, createdAt }))
+                  .sort((first, second) => second.createdAt.localeCompare(first.createdAt)),
+              });
+            }
+            if (url.pathname === '/owner-routes/add' && init?.method === 'POST') {
+              const route = JSON.parse(String(init.body)) as {
+                formId: string;
+                createdAt: string;
+              };
+              indexed.set(route.formId, route.createdAt);
+              return Response.json({ indexed: true });
+            }
+            if (url.pathname === '/owner-routes/remove' && init?.method === 'POST') {
+              const route = JSON.parse(String(init.body)) as { formId: string };
+              indexed.delete(route.formId);
+              return Response.json({ removed: true });
+            }
+            return Response.json({ error: 'Not found' }, { status: 404 });
+          }
+          const formId = objectName;
           if (url.pathname === '/' && (!init?.method || init.method === 'GET')) {
             const record = records.get(formId);
             return record
@@ -111,6 +141,7 @@ export function baseEnv(options?: {
   send?: (message: EmailMessageBuilder) => Promise<{ messageId: string }>;
   requests?: string[];
   routes?: Map<string, StoredRouteRecord>;
+  ownerRoutes?: Map<string, Map<string, string>>;
   quotaNames?: string[];
 }): Env {
   const requests = options?.requests ?? [];
@@ -133,7 +164,7 @@ export function baseEnv(options?: {
       requests,
       options?.quotaNames,
     ),
-    ROUTES: routeNamespace(routes),
+    ROUTES: routeNamespace(routes, options?.ownerRoutes),
     DELIVERY_MODE: 'verified',
     MONTHLY_LIMIT: '250',
     FROM_EMAIL: 'forms@conform.test',
