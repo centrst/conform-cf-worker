@@ -1,0 +1,47 @@
+name = "centrst-conform-worker-staging"
+main = "src/index.ts"
+compatibility_date = "2026-07-21"
+keep_vars = true
+workers_dev = true
+
+# Staging for the Centrst-hosted service: the smoke-test loop for release
+# verification and the target for the conform-bench agent benchmark. Runs
+# DELIVERY_MODE=arbitrary (set in the dashboard) so verification emails come
+# from the Worker itself and an IMAP harness can confirm them without touching
+# the production Cloudflare destination-address allowance.
+#
+# Like wrangler.centrst.toml, runtime values live in the Cloudflare dashboard.
+# Deploy manually: npx wrangler deploy --config wrangler.centrst-staging.toml
+
+[secrets]
+required = [
+  "ROUTE_TOKEN_SECRET",
+  "OWNER_HASH_SECRET",
+]
+
+[[send_email]]
+name = "EMAIL"
+
+[[ratelimits]]
+name = "REGISTRATION_RATE_LIMITER"
+namespace_id = "17001"
+
+[ratelimits.simple]
+limit = 5
+period = 60
+
+[[durable_objects.bindings]]
+name = "QUOTAS"
+class_name = "InboxQuota"
+
+[[durable_objects.bindings]]
+name = "ROUTES"
+class_name = "FormRoute"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["InboxQuota"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FormRoute"]
