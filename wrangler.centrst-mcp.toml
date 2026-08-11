@@ -1,4 +1,5 @@
 name = "centrst-conform-mcp"
+account_id = "c038d1ab6b5acb96e4c34267d80c1c19"
 main = "mcp/src/index.ts"
 compatibility_date = "2026-07-21"
 keep_vars = true
