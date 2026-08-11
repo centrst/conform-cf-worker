@@ -227,7 +227,7 @@ Domain makes Cloudflare issue and manage the certificate for the multi-level
 npx wrangler versions upload --config wrangler.centrst.toml
 ```
 
-Runtime values and secrets are managed in the `centrst-conform-worker`
+Runtime values and secrets are managed in the `conform-worker`
 dashboard. Do not use the generic `wrangler.toml` for this deployment.
 
 ### Preview
