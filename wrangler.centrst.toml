@@ -66,3 +66,8 @@ new_sqlite_classes = ["InboxQuota"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["FormRoute"]
+
+# Retain logs. Without this a 500 leaves no trace: wrangler tail only shows
+# live traffic, so a failure is gone the moment it happens.
+[observability]
+enabled = true
