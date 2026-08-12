@@ -1,4 +1,4 @@
-name = "centrst-conform-mcp"
+name = "conform-mcp"
 account_id = "c038d1ab6b5acb96e4c34267d80c1c19"
 main = "mcp/src/index.ts"
 compatibility_date = "2026-07-21"
@@ -7,8 +7,16 @@ workers_dev = false
 
 # Zone routes take precedence over the engine's Custom Domain on the same
 # hostname, so /mcp* reaches this worker while everything else stays with the
-# delivery engine. Runtime values are managed in the Cloudflare dashboard.
+# delivery engine.
+#
+# No [vars] are required: CONFORM_BASE_URL falls back to the request origin,
+# which is correct precisely because this is routed on the engine's own
+# hostname. Nothing here should be attached by hand in the dashboard.
 
 [[routes]]
 pattern = "api.conform.centrst.com/mcp*"
 zone_name = "centrst.com"
+
+# Retain logs, matching the engine and preview Workers.
+[observability]
+enabled = true
