@@ -13,6 +13,8 @@ const INTERNAL_FIELDS = new Set([
   'format',
   '_format',
   '_test',
+  'replyto',
+  '_replyto',
 ]);
 
 const TEST_TRUE_VALUES = new Set(['true', '1', 'yes']);
@@ -127,7 +129,13 @@ export async function parseSubmission(
 
   const spamValue =
     valueAsString(allFields.botcheck) ?? valueAsString(allFields._gotcha);
-  const rawReplyTo = valueAsString(fields.email);
+  // An explicit _replyto wins over the email field, matching the convention
+  // most form services use. Without this the key fell through to the body and
+  // was rendered as if a visitor had typed it.
+  const rawReplyTo =
+    valueAsString(allFields._replyto) ??
+    valueAsString(allFields.replyto) ??
+    valueAsString(fields.email);
   const rawFormat =
     valueAsString(allFields._format) ?? valueAsString(allFields.format);
   const rawTest = valueAsString(allFields._test)?.trim();

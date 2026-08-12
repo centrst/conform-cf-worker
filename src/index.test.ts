@@ -250,6 +250,52 @@ describe('conform worker', () => {
     expect(send.mock.calls[0][0].text).toContain('message\nHello');
   });
 
+  it('takes reply-to from _replyto and keeps it out of the body', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const send = vi.fn(async (_message: EmailMessageBuilder) => ({ messageId: 'message-id' }));
+    const env = baseEnv({ send, routes });
+    await installRoute(env, routes);
+    const { ctx } = executionContext();
+
+    const response = await worker.fetch(
+      new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'name=Ada&_replyto=ada%40example.com&message=Hello',
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    expect(send.mock.calls[0][0]).toMatchObject({ replyTo: 'ada@example.com' });
+    // The control field must not surface as if a visitor had typed it.
+    expect(send.mock.calls[0][0].text).not.toContain('_replyto');
+    expect(send.mock.calls[0][0].text).toContain('message\nHello');
+  });
+
+  it('prefers an explicit _replyto over the email field', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const send = vi.fn(async (_message: EmailMessageBuilder) => ({ messageId: 'message-id' }));
+    const env = baseEnv({ send, routes });
+    await installRoute(env, routes);
+    const { ctx } = executionContext();
+
+    await worker.fetch(
+      new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'email=typed%40example.com&_replyto=explicit%40example.com&message=Hello',
+      }),
+      env,
+      ctx,
+    );
+
+    expect(send.mock.calls[0][0]).toMatchObject({ replyTo: 'explicit@example.com' });
+    // email is a visitor-supplied field and still belongs in the body.
+    expect(send.mock.calls[0][0].text).toContain('typed@example.com');
+  });
+
   it('does not send after the shared monthly allowance is exhausted', async () => {
     const routes = new Map<string, StoredRouteRecord>();
     const send = vi.fn(async (_message: EmailMessageBuilder) => ({ messageId: 'message-id' }));
