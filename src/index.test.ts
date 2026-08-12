@@ -14,6 +14,72 @@ afterEach(() => {
 });
 
 describe('conform worker', () => {
+  it('serves the MCP endpoint from the same Worker as the API', async () => {
+    const { ctx } = executionContext();
+    const env = baseEnv();
+
+    // Both surfaces answer on one Worker: no second script, no zone route
+    // racing the Custom Domain.
+    const mcp = await worker.fetch(new Request('https://api.conform.test/mcp'), env, ctx);
+    expect(mcp.status).toBe(200);
+    expect(await mcp.json()).toMatchObject({ transport: 'streamable-http' });
+
+    // ...and the delivery engine is untouched by the delegation.
+    const api = await worker.fetch(new Request('https://api.conform.test/'), env, ctx);
+    expect(api.status).toBe(200);
+
+    const missing = await worker.fetch(
+      new Request('https://api.conform.test/mcp-not-a-real-path'),
+      env,
+      ctx,
+    );
+    expect(missing.status).toBe(404);
+  });
+
+  it('answers MCP preflight with the MCP CORS headers, not the API ones', async () => {
+    const { ctx } = executionContext();
+    const response = await worker.fetch(
+      new Request('https://api.conform.test/mcp', { method: 'OPTIONS' }),
+      baseEnv(),
+      ctx,
+    );
+
+    expect(response.status).toBe(204);
+    // The engine's own preflight does not allow these, so reaching them proves
+    // /mcp is dispatched ahead of the shared CORS block.
+    expect(response.headers.get('Access-Control-Allow-Headers')).toContain('Mcp-Session-Id');
+  });
+
+  it('routes MCP tool calls through the engine in process', async () => {
+    const { ctx } = executionContext();
+    const globalFetch = vi.spyOn(globalThis, 'fetch');
+
+    const response = await worker.fetch(
+      new Request('https://api.conform.test/mcp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'get_form_status', arguments: { form_id: 'cfm_MISSING000000000' } },
+        }),
+      }),
+      baseEnv(),
+      ctx,
+    );
+
+    expect(response.status).toBe(200);
+    // The tool really ran: it reached the engine and got the engine's own
+    // route_not_found back, rather than failing earlier inside the MCP layer.
+    const body = (await response.json()) as { result?: { content?: { text: string }[] } };
+    expect(body.result?.content?.[0]?.text).toContain('route_not_found');
+    // ...and it got there without the Worker re-entering itself over the
+    // network, which is the point of the injected fetcher.
+    expect(globalFetch).not.toHaveBeenCalled();
+    globalFetch.mockRestore();
+  });
+
   it('publishes its source version and exact storage boundary', async () => {
     const { ctx } = executionContext();
     const response = await worker.fetch(

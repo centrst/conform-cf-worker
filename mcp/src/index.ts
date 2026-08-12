@@ -94,49 +94,65 @@ async function handleRequest(message: JsonRpcMessage, context: ToolContext): Pro
   }
 }
 
+/**
+ * Handle one MCP request.
+ *
+ * `fetcher` is how the tools reach the conForm API. It is injected so the
+ * delivery engine can serve /mcp from its own Worker and dispatch tool calls
+ * in process, rather than making the Worker re-enter itself over the network.
+ */
+export async function handleMcp(
+  request: Request,
+  env: McpEnv,
+  fetcher: typeof fetch = fetch.bind(globalThis),
+): Promise<Response> {
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+  if (request.method === 'GET') {
+    // Stateless server: no SSE stream to resume.
+    return jsonResponse(
+      {
+        name: 'conform-mcp',
+        transport: 'streamable-http',
+        protocol: LATEST_PROTOCOL_VERSION,
+        usage: 'POST JSON-RPC messages to this URL',
+        version: env.SOURCE_COMMIT || 'development',
+      },
+      200,
+    );
+  }
+  if (request.method !== 'POST') {
+    return jsonResponse({ error: 'Method not allowed' }, 405);
+  }
+
+  let message: JsonRpcMessage;
+  try {
+    message = (await request.json()) as JsonRpcMessage;
+  } catch {
+    return rpcError(null, -32700, 'Parse error');
+  }
+  if (Array.isArray(message)) {
+    return rpcError(null, -32600, 'Batch requests are not supported');
+  }
+  if (message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
+    return rpcError(message.id ?? null, -32600, 'Invalid request');
+  }
+  // Notifications (no id) are accepted and acknowledged without a body.
+  if (message.id === undefined && message.method.startsWith('notifications/')) {
+    return new Response(null, { status: 202, headers: CORS_HEADERS });
+  }
+
+  const context: ToolContext = {
+    baseUrl: (env.CONFORM_BASE_URL || new URL(request.url).origin).replace(/\/+$/u, ''),
+    fetcher,
+  };
+  return handleRequest(message, context);
+}
+
+// Standalone entry point, for deploying the MCP server on its own.
 export default {
   async fetch(request: Request, env: McpEnv): Promise<Response> {
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
-    }
-    if (request.method === 'GET') {
-      // Stateless server: no SSE stream to resume.
-      return jsonResponse(
-        {
-          name: 'conform-mcp',
-          transport: 'streamable-http',
-          protocol: LATEST_PROTOCOL_VERSION,
-          usage: 'POST JSON-RPC messages to this URL',
-          version: env.SOURCE_COMMIT || 'development',
-        },
-        200,
-      );
-    }
-    if (request.method !== 'POST') {
-      return jsonResponse({ error: 'Method not allowed' }, 405);
-    }
-
-    let message: JsonRpcMessage;
-    try {
-      message = (await request.json()) as JsonRpcMessage;
-    } catch {
-      return rpcError(null, -32700, 'Parse error');
-    }
-    if (Array.isArray(message)) {
-      return rpcError(null, -32600, 'Batch requests are not supported');
-    }
-    if (message.jsonrpc !== '2.0' || typeof message.method !== 'string') {
-      return rpcError(message.id ?? null, -32600, 'Invalid request');
-    }
-    // Notifications (no id) are accepted and acknowledged without a body.
-    if (message.id === undefined && message.method.startsWith('notifications/')) {
-      return new Response(null, { status: 202, headers: CORS_HEADERS });
-    }
-
-    const context: ToolContext = {
-      baseUrl: (env.CONFORM_BASE_URL || new URL(request.url).origin).replace(/\/+$/u, ''),
-      fetcher: fetch.bind(globalThis),
-    };
-    return handleRequest(message, context);
+    return handleMcp(request, env);
   },
 } satisfies ExportedHandler<McpEnv>;

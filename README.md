@@ -325,10 +325,13 @@ Cursor / VS Code (`mcp.json`):
 { "mcpServers": { "conform": { "url": "https://api.conform.centrst.com/mcp" } } }
 ```
 
-Self-hosters deploy it with `npx wrangler deploy --config wrangler.mcp.toml`
-and set `CONFORM_BASE_URL` to their engine's URL (or route it on the same
-hostname and leave the var unset). The hosted route is defined in
-`wrangler.centrst-mcp.toml`; `mcp/server.json` is the MCP registry manifest.
+The hosted deployment serves this from the delivery engine itself, at `/mcp` —
+one Worker, no separate script and no route to arrange. Set `MCP_URL` so the
+descriptor and `llms.txt` advertise it.
+
+Self-hosters can do the same, or deploy the MCP server standalone with
+`npx wrangler deploy --config wrangler.mcp.toml`, setting `CONFORM_BASE_URL` to
+their engine's URL. `mcp/server.json` is the MCP registry manifest.
 
 ## Install code
 
