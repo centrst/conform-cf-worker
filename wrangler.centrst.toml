@@ -24,6 +24,10 @@ FROM_NAME = "ConForm"
 PUBLIC_URL = "https://api.conform.centrst.com"
 SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
 CLOUDFLARE_ACCOUNT_ID = "c038d1ab6b5acb96e4c34267d80c1c19"
+# The MCP server is served from this Worker at /mcp. Setting this makes
+# the descriptor and llms.txt advertise it; unset, it works but is
+# undiscoverable.
+MCP_URL = "https://api.conform.centrst.com/mcp"
 
 [secrets]
 required = [

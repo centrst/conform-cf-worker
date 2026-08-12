@@ -1,3 +1,4 @@
+import { handleMcp } from '../mcp/src/index';
 import openapiSpec from '../openapi.json';
 import { listAccountRoutes } from './account';
 import {
@@ -822,6 +823,20 @@ function methodNotAllowed(allow: string): Response {
 async function handle(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
+  // The MCP server is served from this Worker rather than a second one. It has
+  // to be dispatched before the CORS block below, because its preflight allows
+  // Mcp-Session-Id and Mcp-Protocol-Version, which the engine's does not.
+  //
+  // Tool calls are given an in-process fetcher so they reach the engine
+  // directly instead of making this Worker re-enter itself over the network.
+  // It routes through respond(), not handle(), because the tools read
+  // response.ok and need a real status rather than a thrown ApiError.
+  if (url.pathname === '/mcp' || url.pathname.startsWith('/mcp/')) {
+    const inProcess: typeof fetch = (input, init) =>
+      respond(new Request(input, init), env, ctx);
+    return handleMcp(request, env, inProcess);
+  }
+
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
@@ -917,26 +932,31 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
   throw new ApiError('not_found', 'Not found');
 }
 
+/** Run a request and map every failure onto the error contract. Never throws. */
+async function respond(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  try {
+    return await handle(request, env, ctx);
+  } catch (error) {
+    if (error instanceof ApiError) return errorResponse(error);
+    if (error instanceof TokenError) {
+      return errorResponse(new ApiError('verification_token_invalid', 'Invalid route'));
+    }
+    if (error instanceof ConfigError) {
+      return errorResponse(new ApiError('config_incomplete', 'Worker configuration is incomplete'));
+    }
+    // internal_error is deliberately opaque to the caller, so log the cause.
+    // Without this a 500 says nothing anywhere and the reason has to be
+    // deduced from the outside.
+    console.error(
+      'Unhandled request failure:',
+      error instanceof Error ? (error.stack ?? error.message) : String(error),
+    );
+    return errorResponse(new ApiError('internal_error', 'Request could not be processed'));
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    try {
-      return await handle(request, env, ctx);
-    } catch (error) {
-      if (error instanceof ApiError) return errorResponse(error);
-      if (error instanceof TokenError) {
-        return errorResponse(new ApiError('verification_token_invalid', 'Invalid route'));
-      }
-      if (error instanceof ConfigError) {
-        return errorResponse(new ApiError('config_incomplete', 'Worker configuration is incomplete'));
-      }
-      // internal_error is deliberately opaque to the caller, so log the cause.
-      // Without this a 500 says nothing anywhere and the reason has to be
-      // deduced from the outside.
-      console.error(
-        'Unhandled request failure:',
-        error instanceof Error ? (error.stack ?? error.message) : String(error),
-      );
-      return errorResponse(new ApiError('internal_error', 'Request could not be processed'));
-    }
+    return respond(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;
