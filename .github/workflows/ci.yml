@@ -25,3 +25,29 @@ jobs:
       - run: npx wrangler deploy --dry-run --config wrangler.centrst.toml
       - run: npx wrangler deploy --dry-run --config wrangler.preview.toml
       - run: npx wrangler deploy --dry-run --config wrangler.mcp.toml
+
+  deploy:
+    # Only after verify passes, and only for main -- never for pull requests.
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Serialise deploys so two merges in quick succession cannot race, and let
+    # a newer commit supersede an older one still waiting.
+    concurrency:
+      group: deploy-conform
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable
+      - run: yarn install --immutable
+      - name: Deploy the delivery engine
+        run: npx wrangler deploy --config wrangler.centrst.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Deploy preview
+        run: npx wrangler deploy --config wrangler.preview.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
