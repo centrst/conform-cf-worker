@@ -5,14 +5,35 @@ compatibility_date = "2026-07-21"
 keep_vars = true
 workers_dev = false
 
-# Centrst manages runtime values in the Cloudflare dashboard. Do not add a
-# [vars] block here: Git deployments must preserve those configured values.
+# Runtime values are declared here, not left to the Cloudflare dashboard.
+# Renaming this Worker (conform-cf-worker -> conform-worker) created a new
+# script, and dashboard-set vars do not follow a rename -- production came up
+# with no vars at all and returned config_incomplete for every route creation.
+# keep_vars = true still preserves anything set out-of-band on top of these.
+[vars]
+DELIVERY_MODE = "verified"
+# Transactional mail sends from a dedicated subdomain so its SPF/DKIM and
+# sending reputation stay separate from the Zoho mail on the apex.
+# One static From for every message; the submitter travels in Reply-To
+# (src/submission.ts -> src/email.ts). Encoding the form id in the local
+# part (notify+<form_id>@, as web3forms does) would add per-form bounce
+# attribution and inbox filtering -- deliberately deferred, not needed for
+# delivery.
+FROM_EMAIL = "notify@conform.centrst.com"
+FROM_NAME = "conForm"
+PUBLIC_URL = "https://api.conform.centrst.com"
+SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
+CLOUDFLARE_ACCOUNT_ID = "c038d1ab6b5acb96e4c34267d80c1c19"
 
 [secrets]
 required = [
   "ROUTE_TOKEN_SECRET",
   "OWNER_HASH_SECRET",
   "CLOUDFLARE_API_TOKEN",
+  # The dashboard at apps.centrst.com authenticates the user with Clerk and
+  # calls POST /v1/account/routes with this shared secret. Without it that
+  # endpoint answers account_lookup_unavailable and "my forms" is empty.
+  "ACCOUNT_LOOKUP_SECRET",
 ]
 
 [[routes]]
