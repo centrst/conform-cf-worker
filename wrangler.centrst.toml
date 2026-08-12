@@ -20,7 +20,7 @@ DELIVERY_MODE = "verified"
 # attribution and inbox filtering -- deliberately deferred, not needed for
 # delivery.
 FROM_EMAIL = "notify@conform.centrst.com"
-FROM_NAME = "conForm"
+FROM_NAME = "ConForm"
 PUBLIC_URL = "https://api.conform.centrst.com"
 SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
 CLOUDFLARE_ACCOUNT_ID = "c038d1ab6b5acb96e4c34267d80c1c19"
