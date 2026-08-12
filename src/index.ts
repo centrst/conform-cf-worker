@@ -929,6 +929,13 @@ export default {
       if (error instanceof ConfigError) {
         return errorResponse(new ApiError('config_incomplete', 'Worker configuration is incomplete'));
       }
+      // internal_error is deliberately opaque to the caller, so log the cause.
+      // Without this a 500 says nothing anywhere and the reason has to be
+      // deduced from the outside.
+      console.error(
+        'Unhandled request failure:',
+        error instanceof Error ? (error.stack ?? error.message) : String(error),
+      );
       return errorResponse(new ApiError('internal_error', 'Request could not be processed'));
     }
   },
