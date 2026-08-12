@@ -12,7 +12,14 @@ workers_dev = false
 # keep_vars = true still preserves anything set out-of-band on top of these.
 [vars]
 DELIVERY_MODE = "verified"
-FROM_EMAIL = "conform@apps.centrst.com"
+# Transactional mail sends from a dedicated subdomain so its SPF/DKIM and
+# sending reputation stay separate from the Zoho mail on the apex.
+# One static From for every message; the submitter travels in Reply-To
+# (src/submission.ts -> src/email.ts). Encoding the form id in the local
+# part (notify+<form_id>@, as web3forms does) would add per-form bounce
+# attribution and inbox filtering -- deliberately deferred, not needed for
+# delivery.
+FROM_EMAIL = "notify@conform.centrst.com"
 FROM_NAME = "conForm"
 PUBLIC_URL = "https://api.conform.centrst.com"
 SOURCE_URL = "https://github.com/centrst/conform-cf-worker"
