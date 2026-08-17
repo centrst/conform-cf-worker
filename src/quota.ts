@@ -30,7 +30,9 @@ export function ensureSchema(sql: SqlStorage): void {
       used INTEGER NOT NULL,
       limit_count INTEGER NOT NULL,
       warned_low INTEGER NOT NULL DEFAULT 0,
-      warned_full INTEGER NOT NULL DEFAULT 0
+      warned_full INTEGER NOT NULL DEFAULT 0,
+      failed INTEGER NOT NULL DEFAULT 0,
+      blocked INTEGER NOT NULL DEFAULT 0
     )
   `);
   const columns = new Set(
@@ -41,6 +43,12 @@ export function ensureSchema(sql: SqlStorage): void {
   }
   if (!columns.has('warned_full')) {
     sql.exec('ALTER TABLE usage ADD COLUMN warned_full INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.has('failed')) {
+    sql.exec('ALTER TABLE usage ADD COLUMN failed INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.has('blocked')) {
+    sql.exec('ALTER TABLE usage ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0');
   }
 
   // The plan is a property of the inbox, not of a month, so it lives in its own
@@ -184,6 +192,7 @@ export class InboxQuota implements DurableObject {
             month,
           )
           .one();
+        this.sql.exec('UPDATE usage SET blocked = blocked + 1 WHERE month = ?1', month);
         // Report the limit being enforced now, not the one stored on the row.
         // After a downgrade those differ, and the row's value would tell the
         // caller they have an allowance they are simultaneously being denied.
@@ -206,11 +215,41 @@ export class InboxQuota implements DurableObject {
     }
 
     if (url.pathname === '/rollback' && request.method === 'POST') {
+      // Rollback is called on exactly one occasion: delivery failed after the
+      // reservation was granted. So it is also the failure tally, and counting
+      // here costs no extra round trip.
       this.sql.exec(
-        'UPDATE usage SET used = MAX(0, used - 1) WHERE month = ?1',
+        'UPDATE usage SET used = MAX(0, used - 1), failed = failed + 1 WHERE month = ?1',
         month,
       );
       return json({ rolledBack: true });
+    }
+
+    if (url.pathname === '/insight' && request.method === 'GET') {
+      const rows = this.sql
+        .exec<{
+          month: string;
+          used: number;
+          limit_count: number;
+          failed: number;
+          blocked: number;
+        }>(
+          'SELECT month, used, limit_count, failed, blocked FROM usage ORDER BY month DESC LIMIT 13',
+        )
+        .toArray();
+      const plan = this.storedPlan();
+      return json({
+        plan: plan?.name ?? 'free',
+        months: rows.map((row) => ({
+          month: row.month,
+          // `used` is the delivered count by construction: a failed delivery is
+          // rolled back, so it never remains counted.
+          delivered: row.used,
+          limit: row.limit_count,
+          failed: row.failed,
+          blocked: row.blocked,
+        })),
+      });
     }
 
     return json({ error: 'Not found' }, 404);
@@ -280,6 +319,35 @@ export async function getInboxPlan(
   });
   if (!response.ok) throw new Error('Plan lookup failed');
   return (await response.json()) as { plan: string; monthly_limit: number | null };
+}
+
+export interface InboxInsight {
+  plan: string;
+  months: Array<{
+    month: string;
+    delivered: number;
+    limit: number;
+    failed: number;
+    blocked: number;
+  }>;
+}
+
+/**
+ * Counters for one inbox. Tallies only — there is no per-submission row and no
+ * timestamp, so this cannot reconstruct who submitted what or when. That is the
+ * property the trust page states about quota storage, and it has to keep
+ * holding once this is exposed.
+ */
+export async function getInboxInsight(env: Env, ownerId: string): Promise<InboxInsight> {
+  if (!env.QUOTAS) {
+    throw new ConfigError('QUOTAS binding is required to read insight');
+  }
+  const id = env.QUOTAS.idFromName(ownerId);
+  const response = await env.QUOTAS.get(id).fetch('https://quota.internal/insight', {
+    method: 'GET',
+  });
+  if (!response.ok) throw new Error('Insight lookup failed');
+  return (await response.json()) as InboxInsight;
 }
 
 export async function rollbackQuota(

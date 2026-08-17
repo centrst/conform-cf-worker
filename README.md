@@ -78,12 +78,23 @@ used count
 limit
 low-warning sent
 full-warning sent
+failed count
+blocked count
 ```
 
 The two warning flags record that the owner has already been told their
 allowance is running low or is spent, so a rolled-back reservation reaching the
 same count again does not resend the same email. They are booleans about
 messages already sent, and reveal nothing about any submission.
+
+The failed and blocked counts are tallies for the same month: deliveries that
+were attempted and did not arrive, and submissions refused because the allowance
+was already spent. `used` is the delivered count by construction, since a failed
+delivery is rolled back and never remains counted. These are integers per
+inbox-month with no timestamps and no per-submission rows, so they cannot say
+who submitted what, or when — only how many. Spam caught by the honeypot is
+deliberately not tallied: counting it would mean a storage write per abusive
+request, which is the amplification the honeypot exists to avoid.
 
 The Durable Object itself is addressed by the opaque inbox ID.
 
@@ -94,7 +105,7 @@ The Durable Object itself is addressed by the opaque inbox ID.
 | Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
 | Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
 | Alias | Stored with the route | Included when building the email | Included in the email |
-| Quota | Opaque ID, month, count, limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
+| Quota | Opaque ID, month, counts (delivered, failed, blocked), limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
 | Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent |
 
 No hosted service can honestly promise that its operator is technically unable

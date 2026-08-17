@@ -1,6 +1,6 @@
 import { handleMcp } from '../mcp/src/index';
 import openapiSpec from '../openapi.json';
-import { listAccountRoutes, setAccountPlans } from './account';
+import { accountInsight, listAccountRoutes, setAccountPlans } from './account';
 import {
   DestinationCapacityError,
   ensureDestinationAddress,
@@ -944,6 +944,11 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
   if (url.pathname === '/v1/account/routes') {
     if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
     return listAccountRoutes(request, env);
+  }
+
+  if (url.pathname === '/v1/account/insight') {
+    if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
+    return accountInsight(request, env);
   }
 
   if (url.pathname === '/v1/account/plans') {

@@ -1,6 +1,6 @@
 import { routeStatusUrl, submissionEndpoint } from './email';
 import { ApiError, json } from './errors';
-import { setInboxPlan } from './quota';
+import { getInboxInsight, setInboxPlan } from './quota';
 import { isValidEmail, normalizeEmail, ownerIdForEmail, quotaKeyForEmail } from './crypto';
 import {
   getStoredRoute,
@@ -188,4 +188,32 @@ export async function setAccountPlans(request: Request, env: Env): Promise<Respo
   );
 
   return json({ success: true, applied: applied.length, plans: applied });
+}
+
+/**
+ * Delivery counters for the inboxes an authenticated broker has verified.
+ *
+ * Counts only: delivered, failed, and blocked per inbox-month, alongside the
+ * limit that applied. There are no per-submission rows, no timestamps, and no
+ * field contents anywhere in the path, so this cannot reconstruct a submission
+ * — which is exactly what the trust page says about quota storage, and what
+ * this endpoint must not quietly change.
+ */
+export async function accountInsight(request: Request, env: Env): Promise<Response> {
+  await authorizeAccountLookup(request, env);
+  const emails = await parseVerifiedEmails(request);
+
+  const inboxes = await Promise.all(
+    emails.map(async (email) => {
+      const quotaKey = await quotaKeyForEmail(
+        email,
+        env.OWNER_HASH_SECRET,
+        env.QUOTA_IDENTITY_EXCEPTIONS,
+      );
+      const insight = await getInboxInsight(env, quotaKey);
+      return { plan: insight.plan, months: insight.months };
+    }),
+  );
+
+  return json({ success: true, inboxes });
 }
