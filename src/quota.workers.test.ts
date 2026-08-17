@@ -437,6 +437,123 @@ describe('InboxQuota plans', () => {
   });
 });
 
+async function insight(name: string) {
+  const response = await quotaStub(name).fetch('https://quota.internal/insight', {
+    method: 'GET',
+  });
+  return (await response.json()) as {
+    plan: string;
+    months: Array<{
+      month: string;
+      delivered: number;
+      limit: number;
+      failed: number;
+      blocked: number;
+    }>;
+  };
+}
+
+describe('InboxQuota delivery insight', () => {
+  it('counts delivered submissions as the surviving reservations', async () => {
+    const inbox = 'insight-delivered';
+    await reserve(inbox, 10);
+    await reserve(inbox, 10);
+    await reserve(inbox, 10);
+
+    const report = await insight(inbox);
+    expect(report.months[0]).toMatchObject({
+      month: MONTH,
+      delivered: 3,
+      failed: 0,
+      blocked: 0,
+    });
+  });
+
+  it('moves a rolled-back reservation from delivered to failed', async () => {
+    const inbox = 'insight-failed';
+    await reserve(inbox, 10);
+    await reserve(inbox, 10);
+    await rollback(inbox);
+
+    const report = await insight(inbox);
+    // A failed delivery must not be reported as delivered, and must not consume
+    // the allowance either.
+    expect(report.months[0]).toMatchObject({ delivered: 1, failed: 1 });
+  });
+
+  it('counts submissions refused because the allowance was spent', async () => {
+    const inbox = 'insight-blocked';
+    await reserve(inbox, 2);
+    await reserve(inbox, 2);
+    await reserve(inbox, 2);
+    await reserve(inbox, 2);
+
+    const report = await insight(inbox);
+    expect(report.months[0]).toMatchObject({ delivered: 2, blocked: 2 });
+  });
+
+  it('keeps months separate and reports the newest first', async () => {
+    const inbox = 'insight-months';
+    await reserve(inbox, 10, '2026-07');
+    await reserve(inbox, 10, '2026-08');
+    await reserve(inbox, 10, '2026-08');
+
+    const report = await insight(inbox);
+    expect(report.months.map((m) => m.month)).toEqual(['2026-08', '2026-07']);
+    expect(report.months[0].delivered).toBe(2);
+    expect(report.months[1].delivered).toBe(1);
+  });
+
+  it('reports the plan alongside the counters', async () => {
+    const inbox = 'insight-plan';
+    await setPlan(inbox, 'conform-plus', 50);
+    await reserve(inbox, 10);
+    const report = await insight(inbox);
+    expect(report.plan).toBe('conform-plus');
+    expect(report.months[0].limit).toBe(50);
+  });
+
+  it('exposes nothing that could reconstruct a submission', async () => {
+    const inbox = 'insight-privacy';
+    await reserve(inbox, 10);
+    await rollback(inbox);
+
+    const report = await insight(inbox);
+    const serialized = JSON.stringify(report);
+
+    // Counters only. No timestamps, no identifiers, no field names, no
+    // addresses -- the trust page says quota storage cannot reproduce a
+    // submission, and this endpoint must not quietly change that.
+    expect(serialized).not.toMatch(/\d{4}-\d{2}-\d{2}T/u);
+    expect(serialized).not.toContain('@');
+    expect(serialized).not.toContain('cfm_');
+    for (const month of report.months) {
+      expect(Object.keys(month).sort()).toEqual(
+        ['blocked', 'delivered', 'failed', 'limit', 'month'],
+      );
+    }
+  });
+
+  it('starts counters at zero on a namespace migrated from the old schema', async () => {
+    const inbox = 'insight-legacy';
+    await runInDurableObject(
+      quotaStub(inbox),
+      (_instance: InboxQuota, state: DurableObjectState) => {
+        const sql = state.storage.sql;
+        sql.exec('DROP TABLE usage');
+        sql.exec(
+          'CREATE TABLE usage (month TEXT PRIMARY KEY, used INTEGER NOT NULL, limit_count INTEGER NOT NULL)',
+        );
+        sql.exec("INSERT INTO usage (month, used, limit_count) VALUES ('2026-08', 5, 10)");
+        ensureSchema(sql);
+      },
+    );
+
+    const report = await insight(inbox);
+    expect(report.months[0]).toMatchObject({ delivered: 5, failed: 0, blocked: 0 });
+  });
+});
+
 describe('InboxQuota routing', () => {
   it('404s an unknown path rather than silently allowing', async () => {
     const response = await quotaStub('unknown-path').fetch(

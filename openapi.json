@@ -139,6 +139,52 @@
         }
       }
     },
+    "/v1/account/insight": {
+      "post": {
+        "operationId": "accountInsight",
+        "summary": "Delivery counters for verified account inboxes",
+        "description": "Counts only \u2014 delivered, failed and blocked per inbox-month, alongside the limit that applied. There are no per-submission rows, no timestamps and no field contents anywhere in this path, so the response cannot reconstruct a submission. `delivered` is the reservation count: a failed delivery is rolled back, so it never remains counted. Spam caught by the honeypot is deliberately not tallied \u2014 counting it would mean a storage write per abusive request, which is the amplification the honeypot exists to avoid.",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <ACCOUNT_LOOKUP_SECRET>`"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["emails"],
+                "properties": {
+                  "emails": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": { "type": "string", "format": "email" }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Per-inbox counters, most recent month first.",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          },
+          "401": {
+            "description": "`account_lookup_unauthorized`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
     "/v1/account/plans": {
       "post": {
         "operationId": "setAccountPlans",
