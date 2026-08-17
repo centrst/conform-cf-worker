@@ -14,8 +14,13 @@ A form has two different names:
   Aliases are not unique. One inbox can have any number of forms with the same
   alias.
 - **Form ID** — a random 80-bit identifier such as
-  `cfm_7K4P9X2M8RWD3JNH`. This is the permanent public identity used in the
-  form endpoint.
+  `cfm_B5DDZ2ANQA4HRWZN`. This is the permanent public identity used in the
+  form endpoint. Examples here deliberately use a realistic ID rather than a
+  fill-in-the-blank one, because the shape is part of what they document — and
+  they pair it with the `forms.example.com` placeholder host, so nothing here is
+  copy-pasteable into a live form. Customer-facing docs make the opposite trade
+  and use `cfm_your_form_id`, which the Worker recognises and answers with
+  guidance instead of a bare 404.
 
 The normal flow is:
 
@@ -362,16 +367,16 @@ Response:
 {
   "success": true,
   "status": "pending_verification",
-  "form_id": "cfm_7K4P9X2M8RWD3JNH",
+  "form_id": "cfm_B5DDZ2ANQA4HRWZN",
   "alias": "Contact",
-  "endpoint": "https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH",
-  "status_url": "https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH",
+  "endpoint": "https://forms.example.com/f/cfm_B5DDZ2ANQA4HRWZN",
+  "status_url": "https://forms.example.com/v1/routes/cfm_B5DDZ2ANQA4HRWZN",
   "message": "Check your inbox for Cloudflare’s verification email. Your endpoint will begin delivering after you confirm it.",
   "next_action": {
     "type": "human_verification",
     "message": "The destination inbox must confirm a verification email. Poll the status URL until status is \"active\" — the endpoint URL will not change.",
     "poll": {
-      "url": "https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH",
+      "url": "https://forms.example.com/v1/routes/cfm_B5DDZ2ANQA4HRWZN",
       "interval_seconds": 15
     }
   }
@@ -381,7 +386,7 @@ Response:
 The endpoint is stable while verification is pending. Check status:
 
 ```sh
-curl https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH
+curl https://forms.example.com/v1/routes/cfm_B5DDZ2ANQA4HRWZN
 ```
 
 ## Machine contract
@@ -442,7 +447,7 @@ Every route serves ready-to-install, accessible form code with its endpoint
 baked in:
 
 ```sh
-curl 'https://forms.example.com/v1/routes/cfm_7K4P9X2M8RWD3JNH/install?framework=react'
+curl 'https://forms.example.com/v1/routes/cfm_B5DDZ2ANQA4HRWZN/install?framework=react'
 ```
 
 Frameworks: `html` (zero-JS baseline), `js`, `react`, `vue`, `svelte`,
@@ -457,7 +462,7 @@ in — they inherit the host site's styling.
 Use the endpoint directly:
 
 ```html
-<form action="https://forms.example.com/f/cfm_7K4P9X2M8RWD3JNH" method="post">
+<form action="https://forms.example.com/f/cfm_B5DDZ2ANQA4HRWZN" method="post">
   <input name="email" type="email" required>
   <textarea name="message" required></textarea>
   <button type="submit">Send</button>
