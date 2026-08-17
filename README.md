@@ -76,7 +76,14 @@ One row per active inbox-month:
 UTC month
 used count
 limit
+low-warning sent
+full-warning sent
 ```
+
+The two warning flags record that the owner has already been told their
+allowance is running low or is spent, so a rolled-back reservation reaching the
+same count again does not resend the same email. They are booleans about
+messages already sent, and reveal nothing about any submission.
 
 The Durable Object itself is addressed by the opaque inbox ID.
 
@@ -87,7 +94,7 @@ The Durable Object itself is addressed by the opaque inbox ID.
 | Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
 | Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
 | Alias | Stored with the route | Included when building the email | Included in the email |
-| Quota | Opaque ID, month, count and limit | Not included in the delivered email | Not sent |
+| Quota | Opaque ID, month, count, limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
 | Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent |
 
 No hosted service can honestly promise that its operator is technically unable
@@ -567,6 +574,12 @@ RETURNING used, limit_count;
 
 A returned row allows delivery. No returned row means the allowance is already
 full. There is one row per active inbox-month, not one row per submission.
+
+The same object decides whether an allowance warning is due, claiming each mark
+against a flag on that row. Doing it here rather than from the returned count is
+what makes it once-only: reservations roll back on delivery failure, so a count
+can reach the same mark twice, and concurrent submissions can reach it together.
+One "running low" and one "allowance full" per inbox-month, and no more.
 
 ## Existing hosted Conform
 

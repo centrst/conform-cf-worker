@@ -104,6 +104,12 @@ export interface QuotaReservation {
   used: number;
   limit: number;
   month: string;
+  /**
+   * Set when this reservation is the one that crossed a warning mark. Claimed
+   * inside the quota Durable Object, so it is returned at most once per mark
+   * per month however many submissions race or roll back.
+   */
+  warn?: 'low' | 'full';
 }
 
 export type SubmissionValue = string | string[];
