@@ -230,6 +230,109 @@ npx wrangler versions upload --config wrangler.centrst.toml
 Runtime values and secrets are managed in the `conform-worker`
 dashboard. Do not use the generic `wrangler.toml` for this deployment.
 
+### How `main` reaches production
+
+**CI never deploys.** `.github/workflows/ci.yml` runs typecheck, tests, and four
+`wrangler deploy --dry-run` invocations — nothing else. A green check on a merge
+commit means the change compiles and its configs are coherent. It does not mean
+the change is live.
+
+Production is deployed by the Cloudflare Git integration on the Centrst account,
+using the `versions upload` command above. That integration is configured in the
+Cloudflare dashboard, not in this repository, so the build command, the injected
+`SOURCE_COMMIT`, and any promotion step are not visible here or in version
+control. Treat "merged" and "live" as separate facts and verify the second.
+
+### Verify what production is actually running
+
+The discovery document reports the deployed commit, so one probe settles it:
+
+```sh
+curl -s https://api.conform.centrst.com/ | jq -r .version   # deployed SHA
+git ls-remote origin main | cut -f1                         # merged SHA
+```
+
+`ls-remote` rather than `rev-parse origin/main`: the latter reads a local
+remote-tracking ref that is only as fresh as your last fetch, so it can report a
+match against a `main` that has since moved, or a mismatch against one that has
+not.
+
+Equal means production is running merged `main`. They can legitimately differ for
+a few minutes after a merge while the build runs, and indefinitely if the build
+failed — check the Workers Builds log in the dashboard before assuming a deploy
+landed.
+
+Pull requests build too, and the Cloudflare bot comments "Deployment successful"
+on them. That is a `versions upload`: it creates a version without routing any
+traffic to it. A green Cloudflare check on a PR does not mean the PR is live —
+confirm with the probe above, which keeps reporting the merged commit.
+
+To confirm a specific behavioural change rather than a SHA, fetch the artifact or
+endpoint it touches. For example, install-template changes are visible in
+`GET /v1/install?framework=html`.
+
+### Account pinning — read before running any deploy command
+
+`wrangler.centrst.toml` and `wrangler.preview.toml` pin `account_id` to the
+Centrst account. **`wrangler.toml` and `wrangler.mcp.toml` do not.** They deploy
+to whatever account the current `wrangler` token defaults to, which on a machine
+logged into another Cloudflare account is that other account.
+
+`npx wrangler deploy` — the bare command in "Deploy it yourself" above — is a
+self-hosting instruction. Running it from a Centrst working copy publishes a
+conForm Worker into whichever account happens to be authenticated. Check
+`npx wrangler whoami` first, and always pass `--config` explicitly when
+deploying anything Centrst-owned.
+
+### Rollback
+
+Every deploy creates a new Worker version and previous versions remain
+available, so recovery does not require a revert commit and a rebuild:
+
+```sh
+npx wrangler versions list --config wrangler.centrst.toml   # 10 most recent
+npx wrangler versions deploy <version-id> --config wrangler.centrst.toml
+```
+
+Both are also available from the Worker's Deployments tab in the dashboard,
+which is the faster path during an incident and the one that works when the
+local token is authenticated to a different account.
+
+A version captures bindings and compatibility settings alongside the code, and
+runtime variables and secrets are bindings — so rolling back restores that
+version's **configuration too, not just its code**. That cuts both ways during
+an incident: if the immediate fix was editing a variable in the dashboard,
+deploying an older version silently reverts that fix as well.
+
+Durable Object state is the exception. It is not tracked by versions, so a
+rollback does not undo the `InboxQuota` and `FormRoute` data written since.
+
+### Monitoring
+
+`[observability] enabled = true` is set on `wrangler.centrst.toml` and
+`wrangler.preview.toml`, so Workers Logs are retained and queryable from the
+dashboard. `wrangler tail --config wrangler.centrst.toml` streams them live.
+
+What is worth looking for:
+
+- `Unhandled request failure:` — the only `console.error` in the Worker
+  (`src/index.ts`). A `500 internal_error` is deliberately opaque to the caller,
+  so this log line is the *only* record of why. If 500s are reported and this
+  line is absent, the failure happened before the handler.
+- `config_incomplete` responses — a missing binding or runtime variable, not a
+  caller error. Most likely after an account or dashboard change.
+- `429 monthly_allowance_exhausted` — an inbox hit its allowance. Nothing warns
+  the owner today (#26), and nothing rate-limits the submissions that consume it
+  (#17), so a spike here can be abuse rather than growth.
+
+Submitted field contents are never logged, by design. Do not add logging that
+would change that — the no-retention claim in the discovery document and on the
+trust page depends on it.
+
+No alerting is configured. Nothing pages anyone when delivery starts failing;
+the failure surfaces only when a form owner notices, or when someone reads the
+logs. That gap is real and currently unowned.
+
 ### Preview
 
 `wrangler.preview.toml` deploys `conform-preview` to its `workers.dev` hostname
