@@ -28,6 +28,13 @@ CLOUDFLARE_ACCOUNT_ID = "c038d1ab6b5acb96e4c34267d80c1c19"
 # the descriptor and llms.txt advertise it; unset, it works but is
 # undiscoverable.
 MCP_URL = "https://api.conform.centrst.com/mcp"
+# The human-readable docs, on the Centrst origin rather than a hostname of
+# their own (centrst/conform, Worker centrst-com-conform). Same deal as
+# MCP_URL: discovery.ts omits docs_url entirely when this is unset, and the
+# llms.txt this Worker serves drops its "- Docs:" line -- so an agent that
+# finds the API has no route to the prose explaining it. The site went live
+# 2026-08-17; before that there was nothing to point at.
+DOCS_URL = "https://centrst.com/conform/docs/"
 
 [secrets]
 required = [
