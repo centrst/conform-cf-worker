@@ -1,3 +1,4 @@
+import { quotaResetsAt } from './contract';
 import { ConfigError } from './errors';
 import { jsonAttachment, submissionText } from './submission';
 import type {
@@ -63,19 +64,63 @@ export async function sendSubmissionEmail(
   await env.EMAIL.send(message);
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+/** "1 September 2026" — spelled out so no reader has to guess a date order. */
+function readableUtcDate(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  return `${date.getUTCDate()} ${MONTH_NAMES[date.getUTCMonth()]} ${date.getUTCFullYear()}`;
+}
+
+/**
+ * Warns an inbox owner about their allowance.
+ *
+ * This email must never promise an upgrade. conForm+ is not a product, no
+ * payment provider is wired, and the dashboard states that everything is free —
+ * so telling someone to upgrade at the moment their forms stop working sends
+ * them after a purchase they cannot make. The two things that are genuinely
+ * actionable are the reset date and self-hosting, so those are what it says.
+ */
 export async function sendQuotaWarning(
   env: Env,
   route: RouteTokenPayload,
   used: number,
   limit: number,
+  month: string,
 ): Promise<void> {
   const exhausted = used >= limit;
+  const resetsOn = readableUtcDate(quotaResetsAt(month));
+  const source = env.SOURCE_URL || 'https://github.com/centrst/conform-cf-worker';
+
   const subject = exhausted
-    ? `Your conForm allowance is now full`
+    ? `Your conForm allowance is full until ${resetsOn}`
     : `Your conForm allowance is running low`;
-  const text = exhausted
-    ? `You have used all ${limit} submissions in your shared monthly allowance. Upgrade to keep receiving submissions this month.`
-    : `You have used ${used} of ${limit} submissions in your shared monthly allowance. Upgrade before you run out.`;
+
+  const opening = exhausted
+    ? `You have used all ${limit} submissions in this month's allowance, so new submissions are not being delivered right now.`
+    : `You have used ${used} of the ${limit} submissions in this month's allowance.`;
+
+  const text = [
+    opening,
+    ``,
+    `The allowance resets on ${resetsOn}. It is shared by every form delivering to this inbox, not counted per form.`,
+    ``,
+    `If you consistently need more than ${limit} a month, you can run conForm yourself on your own Cloudflare account and set your own limit. It is the same open-source Worker that delivers this message:`,
+    source,
+  ].join('\n');
 
   await env.EMAIL.send({
     to: route.email,

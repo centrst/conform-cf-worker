@@ -639,7 +639,8 @@ async function deleteRoute(request: Request, env: Env, formId: string): Promise<
   return json({ success: true, status: 'deleted', form_id: formId });
 }
 
-function thresholdCrossed(used: number, limit: number): boolean {
+/** Exported for tests: the warning marks are the only quota copy trigger. */
+export function thresholdCrossed(used: number, limit: number): boolean {
   if (limit <= 0) return false;
   return used === Math.max(1, Math.ceil(limit * 0.8)) || used === limit;
 }
@@ -800,7 +801,7 @@ async function submit(
 
   if (thresholdCrossed(reservation.used, reservation.limit)) {
     ctx.waitUntil(
-      sendQuotaWarning(env, route, reservation.used, reservation.limit).catch(() => undefined),
+      sendQuotaWarning(env, route, reservation.used, reservation.limit, reservation.month).catch(() => undefined),
     );
   }
 
