@@ -86,13 +86,27 @@ function readableUtcDate(isoTimestamp: string): string {
 }
 
 /**
+ * Where someone is sent to raise their allowance. Derived from DOCS_URL, which
+ * points at the docs index one level below the product page; the trailing slash
+ * is forced because `new URL('../x', '…/docs')` climbs a segment too far.
+ *
+ * A self-hosted deployment has no conForm+ to sell, so this is only used when
+ * the deployment advertises docs at all.
+ */
+function plusUrl(env: Env): string | undefined {
+  if (!env.DOCS_URL) return undefined;
+  const docs = env.DOCS_URL.endsWith('/') ? env.DOCS_URL : `${env.DOCS_URL}/`;
+  return new URL('../#conform-plus', docs).toString();
+}
+
+/**
  * Warns an inbox owner about their allowance.
  *
- * This email must never promise an upgrade. conForm+ is not a product, no
- * payment provider is wired, and the dashboard states that everything is free —
- * so telling someone to upgrade at the moment their forms stop working sends
- * them after a purchase they cannot make. The two things that are genuinely
- * actionable are the reset date and self-hosting, so those are what it says.
+ * The old copy ended with a bare "Upgrade to keep receiving submissions" and no
+ * link, which left the reader at their most frustrated moment with nothing to
+ * click and no idea when service resumes. Every line here has to be actionable:
+ * when the allowance resets, where to get a bigger one, and the self-host route
+ * for anyone who would rather not be metered at all.
  */
 export async function sendQuotaWarning(
   env: Env,
@@ -113,12 +127,17 @@ export async function sendQuotaWarning(
     ? `You have used all ${limit} submissions in this month's allowance, so new submissions are not being delivered right now.`
     : `You have used ${used} of the ${limit} submissions in this month's allowance.`;
 
+  const plus = plusUrl(env);
+
   const text = [
     opening,
     ``,
     `The allowance resets on ${resetsOn}. It is shared by every form delivering to this inbox, not counted per form.`,
+    ...(plus
+      ? [``, `Need more than ${limit} a month? conForm+ raises the hosted limit:`, plus]
+      : []),
     ``,
-    `If you consistently need more than ${limit} a month, you can run conForm yourself on your own Cloudflare account and set your own limit. It is the same open-source Worker that delivers this message:`,
+    `You can also run conForm yourself on your own Cloudflare account and set your own limit. It is the same open-source Worker that delivers this message:`,
     source,
   ].join('\n');
 
