@@ -22,7 +22,7 @@ function envWithMailbox(): { env: Env; sent: any[] } {
 }
 
 describe('quota warning email', () => {
-  it('never tells the reader to upgrade', async () => {
+  it('gives every suggestion somewhere to go', async () => {
     const { env, sent } = envWithMailbox();
 
     await sendQuotaWarning(env, route, 200, 250, '2026-08');
@@ -30,12 +30,40 @@ describe('quota warning email', () => {
 
     expect(sent).toHaveLength(2);
     for (const message of sent) {
-      const body = `${message.subject}\n${message.text}`;
-      // conForm+ is not a product and no payment provider is wired. Pointing
-      // someone at a purchase they cannot make is the defect this guards.
-      expect(body.toLowerCase()).not.toContain('upgrade');
-      expect(body.toLowerCase()).not.toContain('conform+');
+      // The defect was a bare "Upgrade to keep receiving submissions" with no
+      // link and no reset date: nothing to click at the reader's most
+      // frustrated moment. Naming a route out is fine; naming one they cannot
+      // follow is not.
+      const suggestions = message.text
+        .split('\n')
+        .filter((line: string) => /conForm\+|run conForm yourself/u.test(line));
+      expect(suggestions.length).toBeGreaterThan(0);
+      for (const line of suggestions) {
+        const index = message.text.indexOf(line);
+        expect(message.text.slice(index)).toMatch(/https?:\/\//u);
+      }
     }
+  });
+
+  it('points at conForm+ for a bigger hosted allowance', async () => {
+    const { env, sent } = envWithMailbox();
+    env.DOCS_URL = 'https://centrst.com/conform/docs/';
+
+    await sendQuotaWarning(env, route, 250, 250, '2026-08');
+
+    expect(sent[0].text).toContain('conForm+');
+    expect(sent[0].text).toContain('https://centrst.com/conform/#conform-plus');
+  });
+
+  it('omits conForm+ on a deployment that advertises no docs', async () => {
+    const { env, sent } = envWithMailbox();
+    delete env.DOCS_URL;
+
+    await sendQuotaWarning(env, route, 250, 250, '2026-08');
+
+    // A self-hoster has no conForm+ to buy; the self-host line still applies.
+    expect(sent[0].text).not.toContain('conForm+');
+    expect(sent[0].text).toContain('run conForm yourself');
   });
 
   it('gives the reset date in both the low and exhausted mails', async () => {
@@ -174,7 +202,6 @@ describe('the submission pipeline sends the warning', () => {
     expect(warning.subject).toContain('running low');
     // The month must reach the copy, or the reset date silently reads as NaN.
     expect(warning.text).toContain('1 September 2026');
-    expect(warning.text.toLowerCase()).not.toContain('upgrade');
   });
 
   it('stays quiet on an ordinary submission below the mark', async () => {
