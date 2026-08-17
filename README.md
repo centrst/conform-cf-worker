@@ -280,7 +280,7 @@ Every deploy creates a new Worker version and previous versions remain
 available, so recovery does not require a revert commit and a rebuild:
 
 ```sh
-npx wrangler versions list --config wrangler.centrst.toml
+npx wrangler versions list --config wrangler.centrst.toml   # 10 most recent
 npx wrangler versions deploy <version-id> --config wrangler.centrst.toml
 ```
 
