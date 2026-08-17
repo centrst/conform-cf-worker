@@ -42,6 +42,19 @@ export function ensureSchema(sql: SqlStorage): void {
   if (!columns.has('warned_full')) {
     sql.exec('ALTER TABLE usage ADD COLUMN warned_full INTEGER NOT NULL DEFAULT 0');
   }
+
+  // The plan is a property of the inbox, not of a month, so it lives in its own
+  // single-row table rather than being copied onto every usage row. `usage`
+  // keeps recording the limit that applied when each month was counted, which
+  // is what makes a past month's numbers still make sense after an upgrade.
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS plan (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      name TEXT NOT NULL,
+      monthly_limit INTEGER,
+      updated_at TEXT NOT NULL
+    )
+  `);
 }
 
 export class InboxQuota implements DurableObject {
@@ -81,13 +94,72 @@ export class InboxQuota implements DurableObject {
     return undefined;
   }
 
+  /** The inbox's own plan, or null when it has never been granted one. */
+  private storedPlan(): { name: string; monthly_limit: number | null } | null {
+    const rows = this.sql
+      .exec<{ name: string; monthly_limit: number | null }>(
+        'SELECT name, monthly_limit FROM plan WHERE id = 1',
+      )
+      .toArray();
+    return rows[0] ?? null;
+  }
+
+  /**
+   * The limit that actually applies. A granted plan wins over the deployment
+   * default, so entitlement is read inside the object that enforces it — no
+   * lookup on the delivery path, and nothing to be stale.
+   */
+  private effectiveLimit(requestedLimit: number): number {
+    const plan = this.storedPlan();
+    if (!plan || plan.monthly_limit === null) return requestedLimit;
+    return Math.max(0, Math.floor(plan.monthly_limit));
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
-    const body = (await request.json()) as { limit?: number; month?: string };
+    // A plan read carries no body, and request.json() throws on an empty one.
+    const body = (
+      request.method === 'GET' ? {} : await request.json()
+    ) as {
+      limit?: number;
+      month?: string;
+      plan?: string;
+      monthly_limit?: number | null;
+    };
     const month = body.month ?? currentMonth();
 
+    if (url.pathname === '/plan' && request.method === 'POST') {
+      const name = typeof body.plan === 'string' && body.plan.trim() ? body.plan.trim() : 'free';
+      const monthlyLimit =
+        body.monthly_limit === null || body.monthly_limit === undefined
+          ? null
+          : Math.max(0, Math.floor(body.monthly_limit));
+      this.sql.exec(
+        `INSERT INTO plan (id, name, monthly_limit, updated_at) VALUES (1, ?1, ?2, ?3)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           monthly_limit = excluded.monthly_limit,
+           updated_at = excluded.updated_at`,
+        name,
+        monthlyLimit,
+        new Date().toISOString(),
+      );
+      return json({ plan: name, monthly_limit: monthlyLimit });
+    }
+
+    if (url.pathname === '/plan' && request.method === 'GET') {
+      const plan = this.storedPlan();
+      return json({
+        plan: plan?.name ?? 'free',
+        monthly_limit: plan?.monthly_limit ?? null,
+      });
+    }
+
     if (url.pathname === '/reserve' && request.method === 'POST') {
-      const limit = Number.isFinite(body.limit) ? Math.max(0, Math.floor(body.limit ?? 0)) : 0;
+      const requested = Number.isFinite(body.limit)
+        ? Math.max(0, Math.floor(body.limit ?? 0))
+        : 0;
+      const limit = this.effectiveLimit(requested);
       if (limit === 0) return json({ allowed: true, used: 0, limit: 0, month });
 
       const rows = this.sql
@@ -112,10 +184,13 @@ export class InboxQuota implements DurableObject {
             month,
           )
           .one();
+        // Report the limit being enforced now, not the one stored on the row.
+        // After a downgrade those differ, and the row's value would tell the
+        // caller they have an allowance they are simultaneously being denied.
         return json({
           allowed: false,
           used: existing?.used ?? limit,
-          limit: existing?.limit_count ?? limit,
+          limit,
           month,
         });
       }
@@ -145,8 +220,8 @@ export class InboxQuota implements DurableObject {
 async function quotaRequest(
   env: Env,
   ownerId: string,
-  path: '/reserve' | '/rollback',
-  body: { limit?: number; month?: string },
+  path: '/reserve' | '/rollback' | '/plan',
+  body: { limit?: number; month?: string; plan?: string; monthly_limit?: number | null },
 ): Promise<Response> {
   if (!env.QUOTAS) {
     throw new ConfigError('QUOTAS binding is required when MONTHLY_LIMIT is enabled');
@@ -169,6 +244,42 @@ export async function reserveQuota(
   const response = await quotaRequest(env, ownerId, '/reserve', { limit, month });
   if (!response.ok) throw new Error('Quota reservation failed');
   return (await response.json()) as QuotaReservation;
+}
+
+/**
+ * Grants (or clears) an inbox's plan. `monthlyLimit: null` returns it to the
+ * deployment default, which is how a lapsed subscription is expressed — the
+ * inbox keeps working on the free allowance rather than having its forms break.
+ */
+export async function setInboxPlan(
+  env: Env,
+  ownerId: string,
+  plan: string,
+  monthlyLimit: number | null,
+): Promise<{ plan: string; monthly_limit: number | null }> {
+  const response = await quotaRequest(env, ownerId, '/plan', {
+    plan,
+    monthly_limit: monthlyLimit,
+  });
+  if (!response.ok) throw new Error('Plan update failed');
+  return (await response.json()) as { plan: string; monthly_limit: number | null };
+}
+
+export async function getInboxPlan(
+  env: Env,
+  ownerId: string,
+): Promise<{ plan: string; monthly_limit: number | null }> {
+  if (!env.QUOTAS) {
+    throw new ConfigError('QUOTAS binding is required to read a plan');
+  }
+  const id = env.QUOTAS.idFromName(ownerId);
+  const response = await env.QUOTAS.get(id).fetch('https://quota.internal/plan', {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    body: undefined,
+  });
+  if (!response.ok) throw new Error('Plan lookup failed');
+  return (await response.json()) as { plan: string; monthly_limit: number | null };
 }
 
 export async function rollbackQuota(

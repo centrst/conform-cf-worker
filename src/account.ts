@@ -1,6 +1,7 @@
 import { routeStatusUrl, submissionEndpoint } from './email';
 import { ApiError, json } from './errors';
-import { isValidEmail, normalizeEmail, ownerIdForEmail } from './crypto';
+import { setInboxPlan } from './quota';
+import { isValidEmail, normalizeEmail, ownerIdForEmail, quotaKeyForEmail } from './crypto';
 import {
   getStoredRoute,
   listStoredRouteIds,
@@ -118,4 +119,73 @@ export async function listAccountRoutes(request: Request, env: Env): Promise<Res
     .map((record) => accountRouteResource(env, new URL(request.url).origin, record));
 
   return json({ success: true, routes });
+}
+
+interface PlanGrant {
+  email: string;
+  plan: string;
+  monthly_limit: number | null;
+}
+
+/**
+ * Applies a plan to the inboxes an authenticated broker has verified.
+ *
+ * The broker (the account dashboard) is the only component that knows who paid
+ * — it owns identity and billing. It sends verified addresses; the Worker
+ * derives the same opaque quota keys it already uses and writes the grant into
+ * the quota object. No email is stored, and the delivery path performs no
+ * lookup: it reads the limit from the object it was already talking to.
+ *
+ * `monthly_limit: null` returns an inbox to the deployment default. That is how
+ * a lapsed subscription is expressed — forms keep delivering on the free
+ * allowance rather than breaking.
+ */
+export async function setAccountPlans(request: Request, env: Env): Promise<Response> {
+  await authorizeAccountLookup(request, env);
+
+  let body: { grants?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    throw new ApiError('invalid_json', 'A JSON body is required');
+  }
+  if (!Array.isArray(body.grants) || body.grants.length === 0) {
+    throw new ApiError('invalid_json', 'grants must be a non-empty array');
+  }
+  if (body.grants.length > MAX_ACCOUNT_EMAILS) {
+    throw new ApiError('invalid_json', `At most ${MAX_ACCOUNT_EMAILS} grants per request`);
+  }
+
+  const grants: PlanGrant[] = body.grants.map((entry) => {
+    const grant = entry as Partial<PlanGrant>;
+    if (typeof grant.email !== 'string' || !isValidEmail(normalizeEmail(grant.email))) {
+      throw new ApiError('invalid_email', 'Each grant needs a valid email');
+    }
+    if (typeof grant.plan !== 'string' || !grant.plan.trim()) {
+      throw new ApiError('invalid_json', 'Each grant needs a plan name');
+    }
+    const limit = grant.monthly_limit;
+    if (limit !== null && limit !== undefined && !Number.isFinite(limit)) {
+      throw new ApiError('invalid_json', 'monthly_limit must be a number or null');
+    }
+    return {
+      email: normalizeEmail(grant.email),
+      plan: grant.plan.trim(),
+      monthly_limit: limit === undefined || limit === null ? null : Number(limit),
+    };
+  });
+
+  const applied = await Promise.all(
+    grants.map(async (grant) => {
+      const quotaKey = await quotaKeyForEmail(
+        grant.email,
+        env.OWNER_HASH_SECRET,
+        env.QUOTA_IDENTITY_EXCEPTIONS,
+      );
+      const result = await setInboxPlan(env, quotaKey, grant.plan, grant.monthly_limit);
+      return { plan: result.plan, monthly_limit: result.monthly_limit };
+    }),
+  );
+
+  return json({ success: true, applied: applied.length, plans: applied });
 }

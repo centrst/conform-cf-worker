@@ -343,6 +343,100 @@ describe('InboxQuota warning marks', () => {
   });
 });
 
+async function setPlan(
+  name: string,
+  plan: string,
+  monthlyLimit: number | null,
+): Promise<{ plan: string; monthly_limit: number | null }> {
+  const response = await quotaStub(name).fetch('https://quota.internal/plan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan, monthly_limit: monthlyLimit }),
+  });
+  return (await response.json()) as { plan: string; monthly_limit: number | null };
+}
+
+async function readPlan(name: string): Promise<{ plan: string; monthly_limit: number | null }> {
+  const response = await quotaStub(name).fetch('https://quota.internal/plan', { method: 'GET' });
+  return (await response.json()) as { plan: string; monthly_limit: number | null };
+}
+
+describe('InboxQuota plans', () => {
+  it('defaults to free with no override', async () => {
+    expect(await readPlan('plan-default')).toEqual({ plan: 'free', monthly_limit: null });
+  });
+
+  it('lets a granted limit override the deployment default', async () => {
+    const inbox = 'plan-raises';
+    await setPlan(inbox, 'conform-plus', 5);
+
+    // The caller still asks for the deployment default of 2; the object applies
+    // the grant instead, so the delivery path needs no entitlement lookup.
+    for (let i = 0; i < 5; i += 1) {
+      expect((await reserve(inbox, 2)).allowed).toBe(true);
+    }
+    expect(await reserve(inbox, 2)).toMatchObject({ allowed: false, limit: 5 });
+  });
+
+  it('applies a grant to an inbox already counting this month', async () => {
+    const inbox = 'plan-midmonth';
+    await reserve(inbox, 2);
+    await reserve(inbox, 2);
+    expect(await reserve(inbox, 2)).toMatchObject({ allowed: false });
+
+    await setPlan(inbox, 'conform-plus', 10);
+
+    // An upgrade must unblock immediately, not at the next month boundary.
+    expect(await reserve(inbox, 2)).toMatchObject({ allowed: true, used: 3, limit: 10 });
+  });
+
+  it('restores the deployment default when the grant is cleared', async () => {
+    const inbox = 'plan-lapse';
+    await setPlan(inbox, 'conform-plus', 10);
+    for (let i = 0; i < 4; i += 1) await reserve(inbox, 2);
+
+    // A lapsed subscription clears the grant. The inbox must keep working on
+    // the free allowance rather than having its forms break.
+    await setPlan(inbox, 'free', null);
+    const after = await reserve(inbox, 2);
+    expect(after.limit).toBe(2);
+    expect(after.allowed).toBe(false);
+  });
+
+  it('treats a granted zero as unmetered for that inbox', async () => {
+    const inbox = 'plan-unmetered';
+    await setPlan(inbox, 'self-host', 0);
+    const result = await reserve(inbox, 2);
+    expect(result).toEqual({ allowed: true, used: 0, limit: 0, month: MONTH });
+  });
+
+  it('survives a plan being regranted', async () => {
+    const inbox = 'plan-regrant';
+    await setPlan(inbox, 'conform-plus', 10);
+    await setPlan(inbox, 'conform-plus', 20);
+    expect(await readPlan(inbox)).toMatchObject({ plan: 'conform-plus', monthly_limit: 20 });
+  });
+
+  it('keeps the plan on a namespace migrated from the old schema', async () => {
+    const inbox = 'plan-legacy';
+    await runInDurableObject(
+      quotaStub(inbox),
+      (_instance: InboxQuota, state: DurableObjectState) => {
+        const sql = state.storage.sql;
+        sql.exec('DROP TABLE IF EXISTS plan');
+        ensureSchema(sql);
+        const tables = [
+          ...sql.exec<{ name: string }>(
+            "SELECT name FROM sqlite_master WHERE type='table'",
+          ),
+        ].map((row) => row.name);
+        expect(tables).toContain('plan');
+      },
+    );
+    expect(await readPlan(inbox)).toEqual({ plan: 'free', monthly_limit: null });
+  });
+});
+
 describe('InboxQuota routing', () => {
   it('404s an unknown path rather than silently allowing', async () => {
     const response = await quotaStub('unknown-path').fetch(
