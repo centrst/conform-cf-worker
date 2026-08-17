@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { sendQuotaWarning } from './email';
-import worker, { thresholdCrossed } from './index';
+import worker from './index';
+import { lowMark } from './quota';
 import type { Env, RouteTokenPayload, StoredRouteRecord } from './types';
 import { TEST_FORM_ID, baseEnv, executionContext, installRoute } from './test-support';
 
@@ -109,43 +110,30 @@ describe('quota warning email', () => {
   });
 });
 
-describe('quota warning thresholds', () => {
-  it('fires at exactly 80% and at exhaustion, and nowhere else', () => {
-    const firing = [];
-    for (let used = 1; used <= 250; used += 1) {
-      if (thresholdCrossed(used, 250)) firing.push(used);
-    }
-    expect(firing).toEqual([200, 250]);
+describe('quota warning marks', () => {
+  it('puts the low mark at 80% of the limit', () => {
+    expect(lowMark(250)).toBe(200);
+    expect(lowMark(10)).toBe(8);
+    expect(lowMark(3)).toBe(3);
   });
 
-  it('never fires when the limit is disabled', () => {
-    expect(thresholdCrossed(1, 0)).toBe(false);
-    expect(thresholdCrossed(0, 0)).toBe(false);
-    expect(thresholdCrossed(5, -1)).toBe(false);
-  });
-
-  it('still warns once on a limit too small for a distinct 80% mark', () => {
-    // ceil(1 * 0.8) === 1, so the low and exhausted marks coincide.
-    expect(thresholdCrossed(1, 1)).toBe(true);
-  });
-
-  it('is exact-equality, so a rolled-back count can warn twice', () => {
-    // A delivery failure rolls the reservation back, so 200 can be reached
-    // again and re-trigger. Documented in #26; asserted here so the behaviour
-    // is not mistaken for intent when someone fixes it.
-    expect(thresholdCrossed(200, 250)).toBe(true);
-    expect(thresholdCrossed(199, 250)).toBe(false);
-    expect(thresholdCrossed(201, 250)).toBe(false);
+  it('never puts the low mark below the first submission', () => {
+    // ceil(1 * 0.8) is 1, and a limit of 1 must still be able to warn.
+    expect(lowMark(1)).toBe(1);
+    expect(lowMark(0)).toBe(1);
   });
 });
 
 describe('the submission pipeline sends the warning', () => {
-  async function submitWithReservation(used: number) {
+  // The Durable Object decides whether a warning is due and says so on the
+  // reservation; these specs cover what the pipeline does with that answer.
+  // Whether the answer is correct is covered in quota.workers.test.ts.
+  async function submitWithReservation(used: number, warn?: 'low' | 'full') {
     const routes = new Map<string, StoredRouteRecord>();
     const sent: any[] = [];
     const env = baseEnv({
       routes,
-      reservation: { allowed: true, used, limit: 250, month: '2026-08' },
+      reservation: { allowed: true, used, limit: 250, month: '2026-08', ...(warn ? { warn } : {}) },
     });
     env.EMAIL = {
       send: async (message: any) => void sent.push(message),
@@ -166,8 +154,8 @@ describe('the submission pipeline sends the warning', () => {
     return sent;
   }
 
-  it('warns with a real reset date once the 80% mark is reached', async () => {
-    const sent = await submitWithReservation(200);
+  it('warns with a real reset date when the reservation claims the low mark', async () => {
+    const sent = await submitWithReservation(200, 'low');
     const warning = sent.find((message) => /allowance/u.test(message.subject));
 
     expect(warning, 'no allowance warning was sent at the 80% mark').toBeDefined();
@@ -179,6 +167,13 @@ describe('the submission pipeline sends the warning', () => {
 
   it('stays quiet on an ordinary submission below the mark', async () => {
     const sent = await submitWithReservation(3);
+    expect(sent.some((message) => /allowance/u.test(message.subject))).toBe(false);
+  });
+
+  it('stays quiet at the mark when the reservation did not claim it', async () => {
+    // The count alone must not trigger anything: this is the resend the old
+    // used === mark test produced after a rollback.
+    const sent = await submitWithReservation(200);
     expect(sent.some((message) => /allowance/u.test(message.subject))).toBe(false);
   });
 });
