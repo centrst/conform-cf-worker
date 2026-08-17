@@ -139,6 +139,67 @@
         }
       }
     },
+    "/v1/account/plans": {
+      "post": {
+        "operationId": "setAccountPlans",
+        "summary": "Grant a plan to verified account inboxes",
+        "description": "Optional operator interface for a trusted account broker such as the Centrst dashboard. The broker owns identity and billing; it authenticates its user, supplies only addresses it has verified, and authenticates here with the deployment's `ACCOUNT_LOOKUP_SECRET`. The Worker derives the same opaque quota identity it already uses and stores the grant in that inbox's quota object, so the delivery path performs no lookup. No email address is stored. Send `monthly_limit: null` to return an inbox to the deployment default \u2014 that is how a lapsed subscription is expressed, and forms keep delivering on the free allowance rather than breaking.",
+        "parameters": [
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <ACCOUNT_LOOKUP_SECRET>`"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["grants"],
+                "properties": {
+                  "grants": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "items": {
+                      "type": "object",
+                      "required": ["email", "plan"],
+                      "properties": {
+                        "email": { "type": "string", "format": "email" },
+                        "plan": { "type": "string", "description": "Plan name, e.g. `conform-plus`." },
+                        "monthly_limit": {
+                          "type": ["integer", "null"],
+                          "description": "Submissions per month for this inbox. `null` restores the deployment default."
+                        }
+                      }
+                    }
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Plans applied.",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          },
+          "400": {
+            "description": "`invalid_json` or `invalid_email`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "401": {
+            "description": "`account_lookup_unauthorized`.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
     "/v1/account/routes": {
       "post": {
         "operationId": "listAccountRoutes",

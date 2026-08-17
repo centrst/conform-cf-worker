@@ -103,6 +103,7 @@ describe('error taxonomy sync', () => {
         '/llms.txt',
         '/v1/install',
         '/v1/account/routes',
+        '/v1/account/plans',
         '/v1/routes',
         '/v1/routes/verify',
         '/v1/routes/{formId}',
