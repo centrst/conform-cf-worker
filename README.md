@@ -249,8 +249,13 @@ The discovery document reports the deployed commit, so one probe settles it:
 
 ```sh
 curl -s https://api.conform.centrst.com/ | jq -r .version   # deployed SHA
-git rev-parse origin/main                                   # merged SHA
+git ls-remote origin main | cut -f1                         # merged SHA
 ```
+
+`ls-remote` rather than `rev-parse origin/main`: the latter reads a local
+remote-tracking ref that is only as fresh as your last fetch, so it can report a
+match against a `main` that has since moved, or a mismatch against one that has
+not.
 
 Equal means production is running merged `main`. They can legitimately differ for
 a few minutes after a merge while the build runs, and indefinitely if the build
