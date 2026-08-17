@@ -26,6 +26,7 @@ export const ERROR_TABLE = {
   rate_limited: { status: 429, retryable: true },
   verified_destination_capacity: { status: 503, retryable: false },
   route_not_found: { status: 404, retryable: false },
+  placeholder_endpoint: { status: 404, retryable: false },
   verification_token_required: { status: 400, retryable: false },
   verification_token_invalid: { status: 401, retryable: false },
   verification_token_expired: { status: 410, retryable: false },

@@ -36,6 +36,7 @@ import {
   errorResponse,
   json,
 } from './errors';
+import { isPlaceholderFormId } from './placeholders';
 import { InboxQuota, reserveQuota, rollbackQuota } from './quota';
 import {
   activateStoredRoute,
@@ -482,6 +483,64 @@ function acceptsHtml(request: Request): boolean {
   return accept.includes('text/html') && !accept.includes('application/json');
 }
 
+/**
+ * Someone posted to a documentation sample. They are mid-evaluation with a form
+ * already wired up, so answer in the browser they are standing in rather than
+ * leaving them with a bare 404. Nothing they submitted is read, logged or kept.
+ */
+function placeholderGuidancePage(createUrl: string): Response {
+  const href = escapeHtml(createUrl);
+  return new Response(
+    `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>conForm — example endpoint</title>
+<body>
+  <main>
+    <h1>That was the example endpoint</h1>
+    <p>
+      The form ID in that snippet is a sample from the documentation, so it is
+      not connected to any inbox and your submission was not delivered or
+      stored.
+    </p>
+    <p>Your form markup is already correct. It needs your own endpoint:</p>
+    <ol>
+      <li><a href="${href}">Create a form endpoint</a> with the inbox that should receive submissions.</li>
+      <li>Confirm the verification email so delivery can begin.</li>
+      <li>Swap the sample ID in your <code>action</code> for the one you were given.</li>
+    </ol>
+    <p>No account is required and nothing is retained after delivery.</p>
+  </main>
+</body>
+</html>`,
+    { status: ERROR_TABLE.placeholder_endpoint.status, headers: HTML_PAGE_HEADERS },
+  );
+}
+
+/**
+ * Where someone is sent to create their own endpoint. Derived from DOCS_URL,
+ * which points at the docs index one level below the product page. The trailing
+ * slash is forced because `new URL('../x', '…/docs')` resolves a segment too far
+ * up — silently producing the wrong host path for a self-hoster who omits it.
+ */
+function createFormUrl(env: Env): string {
+  if (!env.DOCS_URL) return 'https://centrst.com/conform/#create-form';
+  const docs = env.DOCS_URL.endsWith('/') ? env.DOCS_URL : `${env.DOCS_URL}/`;
+  return new URL('../#create-form', docs).toString();
+}
+
+/**
+ * A copied sample being tried is a funnel signal worth counting. Only the
+ * placeholder ID — a value we publish ourselves — is recorded. Submitted
+ * fields are never read here, so nothing about the sender is logged.
+ */
+function countPlaceholderAttempt(formId: string): void {
+  console.log(
+    JSON.stringify({ event: 'placeholder_endpoint_attempt', form_id: formId }),
+  );
+}
+
 function submissionResultPage(ok: boolean, message: string, status = 200): Response {
   return new Response(
     `<!doctype html>
@@ -919,6 +978,23 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
   if (url.pathname.startsWith('/f/')) {
     const formId = decodeURIComponent(url.pathname.slice('/f/'.length));
     if (request.method !== 'POST') return methodNotAllowed('POST, OPTIONS');
+    if (isPlaceholderFormId(formId)) {
+      countPlaceholderAttempt(formId);
+      const createUrl = createFormUrl(env);
+      if (acceptsHtml(request)) return placeholderGuidancePage(createUrl);
+      throw new ApiError(
+        'placeholder_endpoint',
+        'This form ID is a documentation sample and is not connected to an inbox',
+        {
+          next_action: {
+            type: 'create_route',
+            message:
+              'Create your own form endpoint, then replace the sample ID in the form action.',
+            create_url: createUrl,
+          },
+        },
+      );
+    }
     try {
       return await submit(request, env, ctx, formId);
     } catch (error) {

@@ -337,6 +337,18 @@ describe('every active error code is emitted as its documented envelope', () => 
         ),
     },
     {
+      code: 'placeholder_endpoint',
+      run: () =>
+        fetchWorker(
+          new Request('https://api.conform.test/f/cfm_7K4P9X2M8RWD3JNH', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'name=Sam&email=sam%40example.com&message=hello',
+          }),
+          baseEnv(),
+        ),
+    },
+    {
       code: 'verification_token_required',
       run: () =>
         fetchWorker(
