@@ -45,6 +45,26 @@ describe('install artifacts', () => {
     });
   }
 
+  for (const framework of FRAMEWORKS) {
+    it(`places the ${framework} honeypot after the real fields`, () => {
+      const [file] = installFiles(framework, ENDPOINT);
+      const gotcha = file.content.indexOf('name="_gotcha"');
+      const lastRealField = file.content.lastIndexOf('id="cf-message"');
+      const submit = file.content.indexOf('type="submit"');
+
+      expect(gotcha).toBeGreaterThan(-1);
+      expect(lastRealField).toBeGreaterThan(-1);
+      expect(submit).toBeGreaterThan(-1);
+
+      // Leading text inputs get filled by first-field autofill heuristics
+      // despite autocomplete="off". A tripped honeypot returns the same
+      // 303 + success:true as a real submission, so the visitor sees a
+      // confirmation and the owner silently loses the message.
+      expect(gotcha, `${framework}: honeypot precedes a real field`).toBeGreaterThan(lastRealField);
+      expect(gotcha, `${framework}: honeypot follows the submit button`).toBeLessThan(submit);
+    });
+  }
+
   it('builds a test command that sends a marked test submission', () => {
     expect(testCommand(ENDPOINT)).toContain('_test=true');
     expect(testCommand(ENDPOINT)).toContain(ENDPOINT);

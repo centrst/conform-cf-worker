@@ -18,6 +18,13 @@ export interface InstallFile {
   content: string;
 }
 
+/**
+ * Always emitted *after* the real fields. First-field autofill heuristics
+ * (Chrome, some password managers) fill a leading text input despite
+ * autocomplete="off", and a spam-flagged submission deliberately returns the
+ * same 303 + success:true as a real one — so a false positive is invisible:
+ * the visitor sees the confirmation and the owner never gets the message.
+ */
 const HONEYPOT_HTML = `  <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
     <label for="cf-gotcha">Leave this field empty</label>
     <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off">
@@ -41,8 +48,8 @@ function htmlTemplate(endpoint: string): string {
      Successful posts show a hosted confirmation page; add a hidden
      _redirect field with an https:// URL to return visitors to your site. -->
 <form action="${endpoint}" method="post">
-${HONEYPOT_HTML}
 ${FIELDS_HTML}
+${HONEYPOT_HTML}
   <button type="submit">Send message</button>
 </form>
 `;
@@ -51,8 +58,8 @@ ${FIELDS_HTML}
 function jsTemplate(endpoint: string): string {
   return `<!-- conForm contact form with fetch enhancement. Works without JavaScript too. -->
 <form id="conform-form" action="${endpoint}" method="post">
-${HONEYPOT_HTML}
 ${FIELDS_HTML}
+${HONEYPOT_HTML}
   <button type="submit">Send message</button>
   <p id="conform-status" role="status" aria-live="polite"></p>
 </form>
@@ -118,10 +125,6 @@ export default function ContactForm() {
 
   return (
     <form onSubmit={handleSubmit}>
-      <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
-        <label htmlFor="cf-gotcha">Leave this field empty</label>
-        <input id="cf-gotcha" type="text" name="_gotcha" tabIndex={-1} autoComplete="off" />
-      </div>
       <p>
         <label htmlFor="cf-name">Name</label><br />
         <input id="cf-name" name="name" type="text" autoComplete="name" required />
@@ -134,6 +137,10 @@ export default function ContactForm() {
         <label htmlFor="cf-message">Message</label><br />
         <textarea id="cf-message" name="message" rows={5} required />
       </p>
+      <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
+        <label htmlFor="cf-gotcha">Leave this field empty</label>
+        <input id="cf-gotcha" type="text" name="_gotcha" tabIndex={-1} autoComplete="off" />
+      </div>
       <button type="submit">Send message</button>
       <p role="status" aria-live="polite">{status}</p>
     </form>
@@ -179,10 +186,6 @@ async function handleSubmit(event) {
 
 <template>
   <form @submit.prevent="handleSubmit">
-    <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
-      <label for="cf-gotcha">Leave this field empty</label>
-      <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off">
-    </div>
     <p>
       <label for="cf-name">Name</label><br>
       <input id="cf-name" name="name" type="text" autocomplete="name" required>
@@ -195,6 +198,10 @@ async function handleSubmit(event) {
       <label for="cf-message">Message</label><br>
       <textarea id="cf-message" name="message" rows="5" required></textarea>
     </p>
+    <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
+      <label for="cf-gotcha">Leave this field empty</label>
+      <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off">
+    </div>
     <button type="submit">Send message</button>
     <p role="status" aria-live="polite">{{ status }}</p>
   </form>
@@ -230,10 +237,6 @@ function svelteTemplate(endpoint: string): string {
 </script>
 
 <form on:submit|preventDefault={handleSubmit}>
-  <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
-    <label for="cf-gotcha">Leave this field empty</label>
-    <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off" />
-  </div>
   <p>
     <label for="cf-name">Name</label><br />
     <input id="cf-name" name="name" type="text" autocomplete="name" required />
@@ -246,6 +249,10 @@ function svelteTemplate(endpoint: string): string {
     <label for="cf-message">Message</label><br />
     <textarea id="cf-message" name="message" rows="5" required></textarea>
   </p>
+  <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
+    <label for="cf-gotcha">Leave this field empty</label>
+    <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off" />
+  </div>
   <button type="submit">Send message</button>
   <p role="status" aria-live="polite">{status}</p>
 </form>
@@ -259,8 +266,8 @@ function astroTemplate(endpoint: string): string {
 ---
 
 <form id="conform-form" action="${endpoint}" method="post">
-${HONEYPOT_HTML}
 ${FIELDS_HTML}
+${HONEYPOT_HTML}
   <button type="submit">Send message</button>
   <p id="conform-status" role="status" aria-live="polite"></p>
 </form>
