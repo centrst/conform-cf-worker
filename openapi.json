@@ -579,7 +579,7 @@
         "in": "path",
         "required": true,
         "schema": { "type": "string", "pattern": "^cfm_[A-HJ-NP-Z2-9]{16}$" },
-        "description": "The permanent public form identifier, e.g. cfm_7K4P9X2M8RWD3JNH."
+        "description": "The permanent public form identifier, e.g. cfm_B5DDZ2ANQA4HRWZN."
       },
       "FrameworkParam": {
         "name": "framework",
