@@ -698,12 +698,6 @@ async function deleteRoute(request: Request, env: Env, formId: string): Promise<
   return json({ success: true, status: 'deleted', form_id: formId });
 }
 
-/** Exported for tests: the warning marks are the only quota copy trigger. */
-export function thresholdCrossed(used: number, limit: number): boolean {
-  if (limit <= 0) return false;
-  return used === Math.max(1, Math.ceil(limit * 0.8)) || used === limit;
-}
-
 function validatedRedirect(value: string): string {
   let parsed: URL;
   try {
@@ -858,7 +852,10 @@ async function submit(
     }
   }
 
-  if (thresholdCrossed(reservation.used, reservation.limit)) {
+  // The quota Durable Object decides this, not the count. It claims each mark
+  // once per month, so a rolled-back reservation reaching the same number again
+  // — or two submissions landing together — cannot resend the same warning.
+  if (reservation.warn) {
     ctx.waitUntil(
       sendQuotaWarning(env, route, reservation.used, reservation.limit, reservation.month).catch(() => undefined),
     );

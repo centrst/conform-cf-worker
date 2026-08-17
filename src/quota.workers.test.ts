@@ -1,5 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
+import { ensureSchema } from './quota';
 import type { InboxQuota } from './quota';
 // The pool types `env` as Cloudflare.Env. Only the quota binding is needed
 // here, and it is declared non-optional: QUOTAS is optional on the Worker's own
@@ -29,6 +30,7 @@ interface Reservation {
   used: number;
   limit: number;
   month: string;
+  warn?: 'low' | 'full';
 }
 
 function quotaStub(name: string) {
@@ -218,6 +220,126 @@ describe('InboxQuota rollback', () => {
     const inbox = 'rollback-unknown';
     await rollback(inbox, '2020-01');
     expect(await reserve(inbox, 10, '2020-01')).toMatchObject({ allowed: true, used: 1 });
+  });
+});
+
+describe('InboxQuota warning marks', () => {
+  it('claims the low mark once and never again that month', async () => {
+    const inbox = 'warn-low-once';
+    const limit = 10; // low mark is 8
+
+    const upToMark = [];
+    for (let i = 0; i < 8; i += 1) upToMark.push(await reserve(inbox, limit));
+
+    expect(upToMark.slice(0, 7).every((r) => r.warn === undefined)).toBe(true);
+    expect(upToMark[7].warn).toBe('low');
+
+    expect((await reserve(inbox, limit)).warn).toBeUndefined();
+  });
+
+  it('claims the full mark when the allowance is spent', async () => {
+    const inbox = 'warn-full';
+    const limit = 3; // low mark is 3 as well, so full must win
+
+    await reserve(inbox, limit);
+    await reserve(inbox, limit);
+    expect((await reserve(inbox, limit)).warn).toBe('full');
+
+    // Denied attempts must not warn again — the owner already knows.
+    expect((await reserve(inbox, limit)).warn).toBeUndefined();
+  });
+
+  it('does not resend after a rollback returns the count to the mark', async () => {
+    // This is the defect: a delivery failure rolls the reservation back, the
+    // next submission reaches the same count, and the old used === mark test
+    // fired a second identical email.
+    const inbox = 'warn-rollback';
+    const limit = 10;
+
+    for (let i = 0; i < 8; i += 1) await reserve(inbox, limit);
+    await rollback(inbox);
+
+    const again = await reserve(inbox, limit);
+    expect(again.used).toBe(8);
+    expect(again.warn).toBeUndefined();
+  });
+
+  it('claims each mark at most once under concurrency', async () => {
+    const inbox = 'warn-concurrent';
+    const limit = 10;
+
+    const results = await Promise.all(
+      Array.from({ length: 30 }, () => reserve(inbox, limit)),
+    );
+
+    const warnings = results.map((r) => r.warn).filter(Boolean);
+    expect(warnings.filter((w) => w === 'low')).toHaveLength(1);
+    expect(warnings.filter((w) => w === 'full')).toHaveLength(1);
+  });
+
+  it('warns again in a new month, because the allowance is new', async () => {
+    const inbox = 'warn-new-month';
+    const limit = 1;
+
+    expect((await reserve(inbox, limit, '2026-08')).warn).toBe('full');
+    expect((await reserve(inbox, limit, '2026-09')).warn).toBe('full');
+  });
+
+  it('does not warn twice in a month when the limit is raised', async () => {
+    const inbox = 'warn-raised';
+
+    for (let i = 0; i < 8; i += 1) await reserve(inbox, 10);
+    // The low mark was claimed at 8. Raising the limit to 20 moves the
+    // arithmetic mark to 16, but the owner has already been told once this
+    // month, and a second "running low" for the same month would read as noise
+    // rather than news. One low and one full per month, deliberately.
+    for (let i = 0; i < 9; i += 1) {
+      expect((await reserve(inbox, 20)).warn).toBeUndefined();
+    }
+    // The full mark is a different mark, and is still owed.
+    for (let i = 0; i < 2; i += 1) await reserve(inbox, 20);
+    expect((await reserve(inbox, 20)).warn).toBe('full');
+  });
+
+  it('never warns while the limit is disabled', async () => {
+    expect((await reserve('warn-unmetered', 0)).warn).toBeUndefined();
+  });
+
+  it('migrates a namespace created before the mark columns existed', async () => {
+    const inbox = 'legacy-schema';
+
+    await runInDurableObject(
+      quotaStub(inbox),
+      (_instance: InboxQuota, state: DurableObjectState) => {
+        const sql = state.storage.sql;
+        // The table shape every live inbox currently has.
+        sql.exec('DROP TABLE usage');
+        sql.exec(
+          'CREATE TABLE usage (month TEXT PRIMARY KEY, used INTEGER NOT NULL, limit_count INTEGER NOT NULL)',
+        );
+        sql.exec("INSERT INTO usage (month, used, limit_count) VALUES ('2026-08', 7, 10)");
+
+        ensureSchema(sql);
+
+        const columns = new Set(
+          [...sql.exec<{ name: string }>('PRAGMA table_info(usage)')].map((c) => c.name),
+        );
+        expect(columns.has('warned_low')).toBe(true);
+        expect(columns.has('warned_full')).toBe(true);
+
+        // The existing count must survive, and start unwarned.
+        const row = sql
+          .exec<{ used: number; warned_low: number; warned_full: number }>(
+            "SELECT used, warned_low, warned_full FROM usage WHERE month = '2026-08'",
+          )
+          .one();
+        expect(row).toMatchObject({ used: 7, warned_low: 0, warned_full: 0 });
+
+        // Idempotent: the constructor runs this on every cold start.
+        ensureSchema(sql);
+        ensureSchema(sql);
+      },
+    );
   });
 });
 

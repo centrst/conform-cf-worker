@@ -9,18 +9,76 @@ function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
+/** The count at which the "running low" warning is due. */
+export function lowMark(limit: number): number {
+  return Math.max(1, Math.ceil(limit * 0.8));
+}
+
+/**
+ * Creates the usage table, and adds the warning-mark columns to namespaces that
+ * predate them. Runs from the constructor, so every inbox migrates on its next
+ * cold start — which a code deploy guarantees, since it restarts the objects.
+ *
+ * Exported so the migration path can be tested against a table in the old
+ * shape. A warm instance never re-runs its constructor, so that case cannot be
+ * reached by driving the object through fetch alone.
+ */
+export function ensureSchema(sql: SqlStorage): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS usage (
+      month TEXT PRIMARY KEY,
+      used INTEGER NOT NULL,
+      limit_count INTEGER NOT NULL,
+      warned_low INTEGER NOT NULL DEFAULT 0,
+      warned_full INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+  const columns = new Set(
+    [...sql.exec<{ name: string }>('PRAGMA table_info(usage)')].map((column) => column.name),
+  );
+  if (!columns.has('warned_low')) {
+    sql.exec('ALTER TABLE usage ADD COLUMN warned_low INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.has('warned_full')) {
+    sql.exec('ALTER TABLE usage ADD COLUMN warned_full INTEGER NOT NULL DEFAULT 0');
+  }
+}
+
 export class InboxQuota implements DurableObject {
   private readonly sql: SqlStorage;
 
   constructor(ctx: DurableObjectState) {
     this.sql = ctx.storage.sql;
-    this.sql.exec(`
-      CREATE TABLE IF NOT EXISTS usage (
-        month TEXT PRIMARY KEY,
-        used INTEGER NOT NULL,
-        limit_count INTEGER NOT NULL
+    ensureSchema(this.sql);
+  }
+
+  /**
+   * Claims a warning if one is due, returning it at most once per mark per
+   * month. Deciding this here rather than from `used` at the call site is what
+   * makes it once-only: a rolled-back reservation can reach the same count
+   * twice, and two submissions can land together, both of which re-fired the
+   * old `used === mark` test.
+   *
+   * Rollback deliberately does not clear these flags. A count that flaps around
+   * a mark should not produce a stream of identical emails.
+   */
+  private claimWarning(month: string, used: number, limit: number): 'low' | 'full' | undefined {
+    const row = this.sql
+      .exec<{ warned_low: number; warned_full: number }>(
+        'SELECT warned_low, warned_full FROM usage WHERE month = ?1',
+        month,
       )
-    `);
+      .one();
+
+    if (used >= limit && !row.warned_full) {
+      this.sql.exec('UPDATE usage SET warned_full = 1 WHERE month = ?1', month);
+      return 'full';
+    }
+    if (used >= lowMark(limit) && !row.warned_low) {
+      this.sql.exec('UPDATE usage SET warned_low = 1 WHERE month = ?1', month);
+      return 'low';
+    }
+    return undefined;
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -62,11 +120,13 @@ export class InboxQuota implements DurableObject {
         });
       }
 
+      const warn = this.claimWarning(month, rows[0].used, rows[0].limit_count);
       return json({
         allowed: true,
         used: rows[0].used,
         limit: rows[0].limit_count,
         month,
+        ...(warn ? { warn } : {}),
       });
     }
 
