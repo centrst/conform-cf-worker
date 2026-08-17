@@ -24,6 +24,9 @@ function envWithMailbox(): { env: Env; sent: any[] } {
 describe('quota warning email', () => {
   it('gives every suggestion somewhere to go', async () => {
     const { env, sent } = envWithMailbox();
+    // Without DOCS_URL the conForm+ line is omitted entirely, and this spec
+    // would only ever check the self-host line.
+    env.DOCS_URL = 'https://centrst.com/conform/docs/';
 
     await sendQuotaWarning(env, route, 200, 250, '2026-08');
     await sendQuotaWarning(env, route, 250, 250, '2026-08');
@@ -34,13 +37,15 @@ describe('quota warning email', () => {
       // link and no reset date: nothing to click at the reader's most
       // frustrated moment. Naming a route out is fine; naming one they cannot
       // follow is not.
-      const suggestions = message.text
-        .split('\n')
-        .filter((line: string) => /conForm\+|run conForm yourself/u.test(line));
+      const lines: string[] = message.text.split('\n');
+      const suggestions = lines
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => /conForm\+|run conForm yourself/u.test(line));
       expect(suggestions.length).toBeGreaterThan(0);
-      for (const line of suggestions) {
-        const index = message.text.indexOf(line);
-        expect(message.text.slice(index)).toMatch(/https?:\/\//u);
+      for (const { line, index } of suggestions) {
+        // The URL must be on the very next line. Searching the remainder of the
+        // message would let one suggestion's link satisfy another's.
+        expect(lines[index + 1] ?? '', line).toMatch(/^https?:\/\//u);
       }
     }
   });
