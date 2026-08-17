@@ -257,6 +257,11 @@ a few minutes after a merge while the build runs, and indefinitely if the build
 failed — check the Workers Builds log in the dashboard before assuming a deploy
 landed.
 
+Pull requests build too, and the Cloudflare bot comments "Deployment successful"
+on them. That is a `versions upload`: it creates a version without routing any
+traffic to it. A green Cloudflare check on a PR does not mean the PR is live —
+confirm with the probe above, which keeps reporting the merged commit.
+
 To confirm a specific behavioural change rather than a SHA, fetch the artifact or
 endpoint it touches. For example, install-template changes are visible in
 `GET /v1/install?framework=html`.
@@ -288,10 +293,14 @@ Both are also available from the Worker's Deployments tab in the dashboard,
 which is the faster path during an incident and the one that works when the
 local token is authenticated to a different account.
 
-Two things rolling back does **not** undo, because they live outside the Worker
-bundle: runtime variables and secrets edited in the dashboard, and Durable
-Object stored state. A version rollback restores code, not the `InboxQuota` and
-`FormRoute` data written since.
+A version captures bindings and compatibility settings alongside the code, and
+runtime variables and secrets are bindings — so rolling back restores that
+version's **configuration too, not just its code**. That cuts both ways during
+an incident: if the immediate fix was editing a variable in the dashboard,
+deploying an older version silently reverts that fix as well.
+
+Durable Object state is the exception. It is not tracked by versions, so a
+rollback does not undo the `InboxQuota` and `FormRoute` data written since.
 
 ### Monitoring
 
