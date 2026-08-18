@@ -625,6 +625,7 @@ async function routeStatus(
   if (!isValidFormId(formId)) {
     throw new ApiError('route_not_found', 'Form route not found');
   }
+
   const found = await getStoredRoute(env, formId);
   if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
@@ -750,6 +751,33 @@ async function submit(
   if (!isValidFormId(formId)) {
     throw new ApiError('route_not_found', 'Form route not found');
   }
+
+  // Sits after the honeypot (which costs nothing to reject) and before the
+  // route lookup, so a burst is turned away without touching storage.
+  //
+  // This is the control that makes an unmetered allowance safe. A monthly
+  // quota bounds the total but not the rate, so without this a scraped form
+  // delivers its flood as fast as the attacker can send it -- into the
+  // customer's own inbox. Two keys: the form, so one abused endpoint cannot
+  // affect another, and the client, so a single source is capped regardless of
+  // how many forms it found.
+  if (env.SUBMISSION_RATE_LIMITER) {
+    const clientAddress = request.headers.get('cf-connecting-ip') || 'unknown';
+    const clientId = await ownerIdForEmail(
+      `submission-client:${clientAddress}`,
+      env.OWNER_HASH_SECRET,
+    );
+    const [formLimit, clientLimit] = await Promise.all([
+      env.SUBMISSION_RATE_LIMITER.limit({ key: `form:${formId}` }),
+      env.SUBMISSION_RATE_LIMITER.limit({ key: `client:${clientId}` }),
+    ]);
+    if (!formLimit.success || !clientLimit.success) {
+      throw new ApiError('rate_limited', 'Too many submissions. Try again in a minute.', {
+        retry_after_seconds: 60,
+      });
+    }
+  }
+
   const found = await getStoredRoute(env, formId);
   if (!found) throw new ApiError('route_not_found', 'Form route not found');
   const record = await refreshVerifiedRoute(env, found);
