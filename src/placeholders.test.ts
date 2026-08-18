@@ -37,11 +37,9 @@ describe('placeholder form IDs', () => {
 describe('posting to a placeholder endpoint', () => {
   it('answers a browser with guidance instead of a bare 404', async () => {
     const { ctx } = executionContext();
-    const response = await worker.fetch(
-      submit('cfm_7K4P9X2M8RWD3JNH', 'text/html'),
-      baseEnv(),
-      ctx,
-    );
+    const env = baseEnv();
+    env.DOCS_URL = 'https://example.com/forms/docs/';
+    const response = await worker.fetch(submit('cfm_7K4P9X2M8RWD3JNH', 'text/html'), env, ctx);
 
     expect(response.status).toBe(404);
     expect(response.headers.get('content-type')).toContain('text/html');
@@ -54,11 +52,9 @@ describe('posting to a placeholder endpoint', () => {
 
   it('answers a machine with a structured code and a next action', async () => {
     const { ctx } = executionContext();
-    const response = await worker.fetch(
-      submit('cfm_7K4P9X2M8RWD3JNH', 'application/json'),
-      baseEnv(),
-      ctx,
-    );
+    const env = baseEnv();
+    env.DOCS_URL = 'https://example.com/forms/docs/';
+    const response = await worker.fetch(submit('cfm_7K4P9X2M8RWD3JNH', 'application/json'), env, ctx);
 
     expect(response.status).toBe(404);
     const body = (await response.json()) as Record<string, any>;
@@ -67,6 +63,25 @@ describe('posting to a placeholder endpoint', () => {
     expect(body.retryable).toBe(false);
     expect(body.next_action.type).toBe('create_route');
     expect(body.next_action.create_url).toContain('#create-form');
+  });
+
+  it('sends a self-hoster to their own deployment, never to the vendor', async () => {
+    // With no DOCS_URL this used to hand out a Centrst marketing URL, so a
+    // self-hosted install quietly pointed its own users at the hosted service.
+    const { ctx } = executionContext();
+    const env = baseEnv();
+    delete env.DOCS_URL;
+    delete env.PUBLIC_URL;
+
+    const response = await worker.fetch(
+      submit('cfm_7K4P9X2M8RWD3JNH', 'application/json'),
+      env,
+      ctx,
+    );
+    const body = (await response.json()) as Record<string, any>;
+
+    expect(body.next_action.create_url).toBe('https://api.conform.test/');
+    expect(body.next_action.create_url).not.toContain('centrst');
   });
 
   it('counts the attempt without recording anything the sender submitted', async () => {
@@ -104,8 +119,8 @@ describe('posting to a placeholder endpoint', () => {
   it('points at the product page whether or not DOCS_URL ends in a slash', async () => {
     const { ctx } = executionContext();
     for (const docsUrl of [
-      'https://centrst.com/conform/docs/',
-      'https://centrst.com/conform/docs',
+      'https://example.com/forms/docs/',
+      'https://example.com/forms/docs',
     ]) {
       const env = baseEnv();
       env.DOCS_URL = docsUrl;
@@ -116,7 +131,7 @@ describe('posting to a placeholder endpoint', () => {
       );
       const body = (await response.json()) as Record<string, any>;
       expect(body.next_action.create_url, `DOCS_URL=${docsUrl}`).toBe(
-        'https://centrst.com/conform/#create-form',
+        'https://example.com/forms/#create-form',
       );
     }
   });

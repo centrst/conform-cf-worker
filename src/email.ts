@@ -90,11 +90,14 @@ function readableUtcDate(isoTimestamp: string): string {
  * points at the docs index one level below the product page; the trailing slash
  * is forced because `new URL('../x', '…/docs')` climbs a segment too far.
  *
- * A self-hosted deployment has no conForm+ to sell, so this is only used when
- * the deployment advertises docs at all.
+ * Gated on OPERATOR_NAME, not on DOCS_URL. DOCS_URL means "this deployment
+ * publishes docs" -- and the README tells self-hosters to set it -- so deriving
+ * an upgrade link from it sent a self-hoster's own customers vendor marketing,
+ * from the self-hoster's From address, pointing at a dead anchor on their site.
+ * Only a deployment that has named its operator is selling anything.
  */
 function plusUrl(env: Env): string | undefined {
-  if (!env.DOCS_URL) return undefined;
+  if (!env.DOCS_URL || !env.OPERATOR_NAME?.trim()) return undefined;
   const docs = env.DOCS_URL.endsWith('/') ? env.DOCS_URL : `${env.DOCS_URL}/`;
   return new URL('../#conform-plus', docs).toString();
 }
