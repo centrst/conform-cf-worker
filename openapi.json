@@ -416,7 +416,7 @@
                         "plan": { "type": "string", "description": "Plan name, e.g. `conform-plus`." },
                         "monthly_limit": {
                           "type": ["integer", "null"],
-                          "description": "Submissions per month for this inbox. `null` restores the deployment default."
+                          "description": "Submissions per month for this inbox. `null` grants no ceiling, so the deployment default applies — this is how a lapsed subscription is expressed. `0` grants no ceiling at all, the same convention as `MONTHLY_LIMIT=\"0\"` on a deployment, and is what an unlimited tier needs. Any other number is that many submissions a month. `null` and `0` are different grants and are never treated alike. There is no value meaning \"block this inbox\"."
                         }
                       }
                     }
