@@ -1,3 +1,4 @@
+import { derivedDailyLimit } from './config';
 import { ConfigError } from './errors';
 import type { Env, QuotaReservation } from './types';
 
@@ -138,6 +139,12 @@ export class InboxQuota implements DurableObject {
    * default, so entitlement is read inside the object that enforces it — no
    * lookup on the delivery path, and nothing to be stale.
    */
+  /** The operator's explicit ceiling, or one derived from the allowance in force. */
+  private dayLimit(override: number | undefined, monthlyInForce: number): number {
+    const explicit = Number.isFinite(override) ? Math.max(0, Math.floor(override ?? 0)) : 0;
+    return explicit > 0 ? explicit : derivedDailyLimit(monthlyInForce);
+  }
+
   private effectiveLimit(requestedLimit: number): number {
     const plan = this.storedPlan();
     if (!plan || plan.monthly_limit === null) return requestedLimit;
@@ -194,9 +201,12 @@ export class InboxQuota implements DurableObject {
       // Checked before the monthly row is touched, so a day-capped submission
       // never has to be un-counted. Safe to read then write without a
       // transaction: a Durable Object handles one request at a time.
-      const dayLimit = Number.isFinite(body.daily_limit)
-        ? Math.max(0, Math.floor(body.daily_limit ?? 0))
-        : 0;
+      //
+      // Derived from the limit actually in force, which is why it is computed
+      // here rather than passed in: a granted plan raises the month, and a day
+      // cap left at the deployment's own derivation would hold a paid inbox to
+      // a fraction of what it was sold.
+      const dayLimit = this.dayLimit(body.daily_limit, limit);
       const day = body.day ?? currentDay();
 
       // Unmetered by the month AND by the day: nothing to count.
@@ -332,6 +342,7 @@ export class InboxQuota implements DurableObject {
       const limit = this.effectiveLimit(
         Number.isFinite(body.limit) ? Math.max(0, Math.floor(body.limit ?? 0)) : 0,
       );
+      const dayLimit = this.dayLimit(body.daily_limit, limit);
       const rows = this.sql
         .exec<{ used: number }>('SELECT used FROM usage WHERE month = ?1', month)
         .toArray();
@@ -347,6 +358,10 @@ export class InboxQuota implements DurableObject {
         month,
         day: body.day ?? currentDay(),
         day_used: dayRows[0]?.used ?? 0,
+        // Reported, not recomputed by the caller: the caller does not know what
+        // plan this inbox holds, and a second derivation would drift from the
+        // one the reservation actually enforces.
+        day_limit: dayLimit,
       });
     }
 
@@ -413,6 +428,7 @@ export interface QuotaPeek {
   month: string;
   day: string;
   day_used: number;
+  day_limit: number;
 }
 
 /** What a reservation would report, without making one. */
@@ -420,11 +436,19 @@ export async function peekQuota(
   env: Env,
   ownerId: string,
   limit: number,
+  daily = 0,
 ): Promise<QuotaPeek> {
   const month = currentMonth();
   const day = currentDay();
-  if (limit === 0) return { used: 0, limit: 0, month, day, day_used: 0 };
-  const response = await quotaRequest(env, ownerId, '/peek', { limit, month, day });
+  if (limit === 0 && daily === 0) {
+    return { used: 0, limit: 0, month, day, day_used: 0, day_limit: 0 };
+  }
+  const response = await quotaRequest(env, ownerId, '/peek', {
+    limit,
+    month,
+    day,
+    daily_limit: daily,
+  });
   if (!response.ok) throw new Error('Quota read failed');
   return (await response.json()) as QuotaPeek;
 }

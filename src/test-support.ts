@@ -66,6 +66,10 @@ export function quotaNamespace(
               month: reservation.month,
               day: reservation.day ?? '2026-08-18',
               day_used: 0,
+              // The quota object reports the ceiling it will enforce, derived
+              // from the granted plan. A fake that omitted it made every dry
+              // run read as would_deliver: false.
+              day_limit: reservation.limit > 0 ? Math.max(25, Math.ceil(reservation.limit * 0.2)) : 0,
             });
           }
           return Response.json(reservation);

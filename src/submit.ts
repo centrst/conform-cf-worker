@@ -1,6 +1,6 @@
 import { checkAccessKey } from './access-keys';
 import {
-  dailyLimit,
+  dailyLimitOverride,
   maxFieldLength,
   maxFields,
   maxRequestSize,
@@ -267,9 +267,17 @@ async function dryRunDetail(
 
       const routeDelivery = resolved.payload.delivery;
       const mode: RouteDeliveryMode = routeDelivery?.mode ?? 'email';
-      const quota = await peekQuota(env, resolved.quotaKey, monthlyLimit(env));
+      const quota = await peekQuota(
+        env,
+        resolved.quotaKey,
+        monthlyLimit(env),
+        dailyLimitOverride(env),
+      );
       const withinMonth = quota.limit === 0 || quota.used < quota.limit;
-      const withinDay = dailyLimit(env) === 0 || quota.day_used < dailyLimit(env);
+      // Both ceilings come back from the quota object. Recomputing the day cap
+      // here would read the deployment default and contradict the reservation
+      // for any inbox holding a granted plan.
+      const withinDay = quota.day_limit === 0 || quota.day_used < quota.day_limit;
       // The counters and the delivery plan are the owner's business: month-to-date
       // volume across every form on the inbox, and whether a webhook exists at
       // all. `/f/{id}` is unauthenticated and the form ID is in the page source,
@@ -294,7 +302,7 @@ async function dryRunDetail(
                       limit: quota.limit,
                       resets_at: quotaResetsAt(quota.month),
                       day_used: quota.day_used,
-                      day_limit: dailyLimit(env),
+                      day_limit: quota.day_limit,
                     },
                   }
                 : {}),
@@ -316,7 +324,7 @@ async function deliverSubmission(
     env,
     resolved.quotaKey,
     monthlyLimit(env),
-    dailyLimit(env),
+    dailyLimitOverride(env),
   );
   if (!reservation.allowed && reservation.reason === 'daily') {
     throw new ApiError(

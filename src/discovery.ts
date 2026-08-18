@@ -1,6 +1,6 @@
 import openapiSpec from '../openapi.json';
 import {
-  dailyLimit,
+  defaultDailyLimit,
   deliveryMode,
   maxFieldLength,
   maxFields,
@@ -102,7 +102,7 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
     },
     limits: {
       monthly_submissions_per_inbox: monthlyLimit(env),
-      daily_submissions_per_inbox: dailyLimit(env),
+      daily_submissions_per_inbox: defaultDailyLimit(env),
       max_request_bytes: maxRequestSize(env),
       max_fields: maxFields(env),
       max_field_length: maxFieldLength(env),

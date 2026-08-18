@@ -10,20 +10,36 @@ export function monthlyLimit(env: Env): number {
 }
 
 /**
- * A ceiling on one day's deliveries. The monthly quota bounds the total but
- * not how fast it goes: at the per-minute rate limit alone a 250 allowance
+ * An operator's explicit day ceiling, or 0 meaning "derive one".
+ *
+ * Deliberately not the derived value. A day cap has to come from the allowance
+ * actually in force, and that is the *granted* plan, which only the quota
+ * object knows -- so the derivation lives there, beside effectiveLimit. Doing
+ * it here read the deployment default instead: an inbox granted 10,000 a month
+ * was still held to a day cap derived from 250, which capped it at 1,500 and
+ * made the allowance it had been sold unreachable.
+ */
+export function dailyLimitOverride(env: Env): number {
+  const parsed = Number.parseInt(env.DAILY_LIMIT ?? '', 10);
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+}
+
+/**
+ * The day ceiling an inbox with no granted plan gets. For discovery and docs
+ * only -- the delivery path takes the number the quota object returns, because
+ * only that object knows what the inbox is entitled to.
+ */
+export function defaultDailyLimit(env: Env): number {
+  return dailyLimitOverride(env) || derivedDailyLimit(monthlyLimit(env));
+}
+
+/**
+ * A fifth of a month in one day, floor 25. The monthly quota bounds the total
+ * but not how fast it goes: at the per-minute rate limit alone a 250 allowance
  * drains in under an hour. A day cap bounds the damage without dropping a
  * legitimately busy afternoon the way a tighter per-minute limit would.
  */
-export function dailyLimit(env: Env): number {
-  const parsed = Number.parseInt(env.DAILY_LIMIT ?? '', 10);
-  if (Number.isFinite(parsed)) return Math.max(0, parsed);
-  // Derived only. An explicitly configured DAILY_LIMIT is honoured above even
-  // when MONTHLY_LIMIT is 0 -- see reserveQuota, which used to short-circuit on
-  // the monthly limit alone and silently discard a day ceiling an operator had
-  // deliberately set. A *derived* ceiling on an unmetered deployment would be
-  // the opposite mistake, so that one stays off.
-  const monthly = monthlyLimit(env);
+export function derivedDailyLimit(monthly: number): number {
   if (monthly === 0) return 0;
   return Math.max(25, Math.ceil(monthly * 0.2));
 }
