@@ -352,7 +352,6 @@ export function installFiles(
 
 export function installNotes(framework: Framework, withKey = false): string[] {
   const notes = [
-    'This generated code is MIT licensed and carries no obligations, whatever licence the delivery engine uses.',
     'Submissions deliver only after the destination inbox is verified — poll the status URL until status is "active". The endpoint URL will not change.',
     'The hidden _gotcha field is a spam trap. Keep it in the form and never fill it.',
     'Check the install without sending anything: add _dry_run=true to a submission. Every check runs — route active, access key, declared schema, allowance — and nothing is spent. Errors are identical to a real submission\u2019s.',

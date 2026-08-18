@@ -84,7 +84,7 @@
       "get": {
         "operationId": "getGenericInstallCode",
         "summary": "Generic install artifact",
-        "description": "MIT licensed, whatever the engine is licensed under \u2014 these artifacts go inside your site and carry no obligation. Ready-to-install, accessible form code with a `{{FORM_ENDPOINT}}` placeholder — for previews, documentation, and drift checks. Use `/v1/routes/{formId}/install` for code with the real endpoint baked in.",
+        "description": "Ready-to-install, accessible form code with a `{{FORM_ENDPOINT}}` placeholder — for previews, documentation, and drift checks. Use `/v1/routes/{formId}/install` for code with the real endpoint baked in.",
         "parameters": [
           { "$ref": "#/components/parameters/FrameworkParam" },
           { "$ref": "#/components/parameters/RawParam" }
@@ -110,7 +110,7 @@
       "get": {
         "operationId": "getInstallCode",
         "summary": "Personalized install artifact",
-        "description": "MIT licensed, whatever the engine is licensed under. The same accessible form code with this route's real endpoint baked in, plus the route's current status and `next_action`. The `test_command` submits a `_test`-marked submission for delivery proof.",
+        "description": "The same accessible form code with this route's real endpoint baked in, plus the route's current status and `next_action`. The `test_command` submits a `_test`-marked submission for delivery proof.",
         "parameters": [
           { "$ref": "#/components/parameters/FormId" },
           { "$ref": "#/components/parameters/FrameworkParam" },
