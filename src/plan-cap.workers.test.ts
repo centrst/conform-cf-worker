@@ -17,11 +17,16 @@ async function setPlan(inbox: string, plan: string, monthly: number | null) {
   });
 }
 
-async function reserve(inbox: string, limit: number, daily: number, day: string) {
+async function reserve(inbox: string, limit: number, daily: number | undefined, day: string) {
   const response = await stub(inbox).fetch('https://quota.internal/reserve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ limit, month: '2026-08', daily_limit: daily, day }),
+    body: JSON.stringify({
+      limit,
+      month: '2026-08',
+      day,
+      ...(daily === undefined ? {} : { daily_limit: daily }),
+    }),
   });
   return (await response.json()) as { allowed: boolean; reason?: string };
 }
@@ -42,7 +47,7 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 60; index += 1) {
-      if ((await reserve(inbox, 250, 0, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, undefined, '2026-08-18')).allowed) delivered += 1;
     }
 
     // A fifth of 10,000, not a fifth of the deployment's own 250.
@@ -54,10 +59,23 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 60; index += 1) {
-      if ((await reserve(inbox, 250, 0, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, undefined, '2026-08-18')).allowed) delivered += 1;
     }
 
     expect(delivered).toBe(50);
+  });
+
+  it('treats an explicit zero as the ceiling switched off, not as absent', async () => {
+    const inbox = 'zero-daily';
+
+    let delivered = 0;
+    for (let index = 0; index < 60; index += 1) {
+      if ((await reserve(inbox, 250, 0, '2026-08-18')).allowed) delivered += 1;
+    }
+
+    // Collapsing "unset" and "zero" turned DAILY_LIMIT="0" into a derived cap
+    // of 50 that the operator never asked for.
+    expect(delivered).toBe(60);
   });
 
   it('lets an operator override the derivation on any plan', async () => {
@@ -79,7 +97,7 @@ describe('a granted plan and the daily ceiling', () => {
     const response = await stub(inbox).fetch('https://quota.internal/peek', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit: 250, month: '2026-08', day: '2026-08-18', daily_limit: 0 }),
+      body: JSON.stringify({ limit: 250, month: '2026-08', day: '2026-08-18' }),
     });
     const peek = (await response.json()) as { limit: number; day_limit: number };
 

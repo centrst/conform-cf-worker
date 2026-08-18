@@ -19,9 +19,12 @@ export function monthlyLimit(env: Env): number {
  * was still held to a day cap derived from 250, which capped it at 1,500 and
  * made the allowance it had been sold unreachable.
  */
-export function dailyLimitOverride(env: Env): number {
+export function dailyLimitOverride(env: Env): number | undefined {
   const parsed = Number.parseInt(env.DAILY_LIMIT ?? '', 10);
-  return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+  // undefined, not 0: DAILY_LIMIT="0" is an operator turning the ceiling off,
+  // and it has to survive the trip to the quota object as a decision rather
+  // than as an absence.
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : undefined;
 }
 
 /**
@@ -30,7 +33,7 @@ export function dailyLimitOverride(env: Env): number {
  * only that object knows what the inbox is entitled to.
  */
 export function defaultDailyLimit(env: Env): number {
-  return dailyLimitOverride(env) || derivedDailyLimit(monthlyLimit(env));
+  return dailyLimitOverride(env) ?? derivedDailyLimit(monthlyLimit(env));
 }
 
 /**

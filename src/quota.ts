@@ -125,6 +125,18 @@ export class InboxQuota implements DurableObject {
   }
 
   /** The inbox's own plan, or null when it has never been granted one. */
+  /**
+   * The operator's explicit ceiling, or one derived from the allowance in force.
+   *
+   * Absent and zero mean different things, and collapsing them turned
+   * DAILY_LIMIT="0" -- an operator switching the day cap off -- into a derived
+   * cap they never asked for.
+   */
+  private dayLimit(override: number | undefined, monthlyInForce: number): number {
+    if (override === undefined) return derivedDailyLimit(monthlyInForce);
+    return Number.isFinite(override) ? Math.max(0, Math.floor(override)) : 0;
+  }
+
   private storedPlan(): { name: string; monthly_limit: number | null } | null {
     const rows = this.sql
       .exec<{ name: string; monthly_limit: number | null }>(
@@ -139,12 +151,6 @@ export class InboxQuota implements DurableObject {
    * default, so entitlement is read inside the object that enforces it — no
    * lookup on the delivery path, and nothing to be stale.
    */
-  /** The operator's explicit ceiling, or one derived from the allowance in force. */
-  private dayLimit(override: number | undefined, monthlyInForce: number): number {
-    const explicit = Number.isFinite(override) ? Math.max(0, Math.floor(override ?? 0)) : 0;
-    return explicit > 0 ? explicit : derivedDailyLimit(monthlyInForce);
-  }
-
   private effectiveLimit(requestedLimit: number): number {
     const plan = this.storedPlan();
     if (!plan || plan.monthly_limit === null) return requestedLimit;
@@ -436,7 +442,7 @@ export async function peekQuota(
   env: Env,
   ownerId: string,
   limit: number,
-  daily = 0,
+  daily?: number,
 ): Promise<QuotaPeek> {
   const month = currentMonth();
   const day = currentDay();
@@ -457,7 +463,7 @@ export async function reserveQuota(
   env: Env,
   ownerId: string,
   limit: number,
-  daily = 0,
+  daily?: number,
 ): Promise<QuotaReservation> {
   const month = currentMonth();
   const day = currentDay();
