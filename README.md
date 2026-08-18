@@ -272,7 +272,7 @@ CLOUDFLARE_ACCOUNT_ID = "your-account-id"
 OPERATOR_NAME = "Your Org"                     # else llms.txt omits the attribution rather than inheriting ours
 MCP_URL = "https://forms.example.com/mcp"      # else the bundled MCP server works but is undiscoverable
 DOCS_URL = "https://example.com/forms/docs/"   # else discovery omits docs_url and llms.txt drops its docs line
-DAILY_LIMIT = "50"                             # else 20% of MONTHLY_LIMIT, minimum 25
+DAILY_LIMIT = "50"                             # else a fifth of the inbox's own allowance, minimum 25
 MAX_FIELDS = "100"
 MAX_FIELD_LENGTH = "20000"
 ```
@@ -709,11 +709,17 @@ Three separate limits, because they bound different things:
 | --- | --- | --- |
 | `SUBMISSION_RATE_LIMITER` | 5/min per form | a burst against one endpoint |
 | `SUBMISSION_CLIENT_RATE_LIMITER` | 2/min per client | a single source across every form it found |
-| `DAILY_LIMIT` | 20% of the monthly limit, minimum 25 | how fast a month can be spent |
+| `DAILY_LIMIT` | a fifth of the allowance **in force**, minimum 25 | how fast a month can be spent |
 
 The per-form ceiling is deliberately not tighter. A shared cap that is too low
 turns two real visitors in the same minute into one lost enquiry, and the owner
 never hears about it.
+
+The day ceiling is derived from the allowance the inbox actually holds, not from
+`MONTHLY_LIMIT`. An inbox granted 10,000 a month gets 2,000 a day; one on the
+deployment default of 250 gets 50. Deriving it from the deployment default held
+a granted inbox to 1,500 a month, which is less than it had been sold. Setting
+`DAILY_LIMIT` overrides the derivation for every inbox.
 
 The day ceiling is the better protection for the monthly allowance than a
 tighter per-minute limit: it bounds the damage without dropping a legitimately
