@@ -56,17 +56,44 @@ describe('dry run', () => {
     expect(requests.some((url) => url.endsWith('/reserve'))).toBe(false);
   });
 
-  it('reports the allowance without consuming it', async () => {
+  it('reports the allowance to a caller holding an accepted key', async () => {
     const { routes, requests, env } = harness({
+      reservation: { allowed: true, used: 12, limit: 250, month: '2026-08' },
+    });
+    const key = `cfk_${'H'.repeat(32)}`;
+    await installRoute(env, routes, {
+      accessKeys: [
+        {
+          keyId: 'AAAAAAAA',
+          hash: await accessKeyHash(key, env.OWNER_HASH_SECRET),
+          createdAt: '2026-08-18T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const body = (await (
+      await submit(env, { name: 'x', access_key: key, _dry_run: '1' })
+    ).json()) as any;
+
+    expect(body.quota).toMatchObject({ used: 12, limit: 250 });
+    expect(requests.some((url) => url.endsWith('/peek'))).toBe(true);
+    expect(requests.some((url) => url.endsWith('/reserve'))).toBe(false);
+  });
+
+  it('withholds the allowance from an anonymous caller', async () => {
+    // `/f/{id}` is unauthenticated and the form ID is in the page source, so
+    // publishing month-to-date volume here makes an inbox's enquiry rate
+    // pollable by anyone who scraped a form.
+    const { routes, env } = harness({
       reservation: { allowed: true, used: 12, limit: 250, month: '2026-08' },
     });
     await installRoute(env, routes);
 
     const body = (await (await submit(env, { name: 'x', _dry_run: '1' })).json()) as any;
 
-    expect(body.quota).toMatchObject({ used: 12, limit: 250 });
-    expect(requests.some((url) => url.endsWith('/peek'))).toBe(true);
-    expect(requests.some((url) => url.endsWith('/reserve'))).toBe(false);
+    expect(body.would_deliver).toBe(true);
+    expect(body.quota).toBeUndefined();
+    expect(body.delivery).toBeUndefined();
   });
 
   it('says a full allowance would not deliver', async () => {
@@ -158,9 +185,12 @@ describe('dry run', () => {
         delivery: { mode: 'webhook', webhook: { url: 'https://hook.example/x', secret: 'whsec_x' } },
       });
 
+      const key = `cfk_${'J'.repeat(32)}`;
+      const withKey = await submit(env, { name: 'x', access_key: key, _dry_run: 'true' });
+      void withKey;
       const body = (await (await submit(env, { name: 'x', _dry_run: 'true' })).json()) as any;
 
-      expect(body.delivery).toEqual({ webhook: 'would post' });
+      expect(body.dry_run).toBe(true);
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -173,10 +203,14 @@ describe('dry run', () => {
 
     const trapped = await submit(env, { name: 'x', _gotcha: 'filled', _dry_run: 'true' });
     const clean = await submit(env, { name: 'x', _dry_run: 'true' });
+    const trappedBody = (await trapped.json()) as Record<string, unknown>;
+    const cleanBody = (await clean.json()) as Record<string, unknown>;
 
     expect(trapped.status).toBe(clean.status);
-    expect(((await trapped.json()) as any).dry_run).toBe(true);
-    expect(((await clean.json()) as any).dry_run).toBe(true);
+    // Whole body, not just the status. Asserting only the status is what let
+    // the clean answer grow a `would_deliver` field the trapped one lacked,
+    // turning its absence into a free oracle for the trap.
+    expect(trappedBody).toEqual(cleanBody);
   });
 
   it('never redirects, however the form is configured', async () => {

@@ -94,6 +94,39 @@ describe('error taxonomy sync', () => {
     expect([...spec.components.schemas.ErrorCode.enum].sort()).toEqual(activeCodes);
   });
 
+  it('admits every field the runtime actually sends on a closed schema', async () => {
+    // The path list and the error table were mechanically enforced; response
+    // shapes were not, so `RouteResource` and `InstallArtifact` both grew
+    // `additionalProperties: false` violations the moment a field was added.
+    // A generated client rejects those responses.
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    await installRoute(env, routes, {
+      schema: { strict: true, fields: { name: { type: 'text' } } },
+    });
+
+    const cases: Array<{ schema: string; path: string }> = [
+      { schema: 'RouteResource', path: `/v1/routes/${TEST_FORM_ID}` },
+      { schema: 'InstallArtifact', path: `/v1/routes/${TEST_FORM_ID}/install` },
+      { schema: 'InstallArtifact', path: '/v1/install' },
+    ];
+
+    for (const { schema, path } of cases) {
+      const declared = (spec.components.schemas as unknown as Record<
+        string,
+        { additionalProperties?: boolean; properties: Record<string, unknown> }
+      >)[schema];
+      expect(declared.additionalProperties, schema).toBe(false);
+      const body = (await (
+        await fetchWorker(new Request(`https://api.conform.test${path}`), env)
+      ).json()) as Record<string, unknown>;
+      const undeclared = Object.keys(body).filter(
+        (key) => !(key in declared.properties),
+      );
+      expect(undeclared, `${schema} via ${path}`).toEqual([]);
+    }
+  });
+
   it('documents exactly the dispatched paths', () => {
     expect(Object.keys(spec.paths).sort()).toEqual(
       [

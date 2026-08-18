@@ -150,7 +150,7 @@ describe('InboxQuota daily ceiling', () => {
 describe('InboxQuota reservation', () => {
   it('counts up from one and reports the configured limit', async () => {
     const inbox = 'counts-up';
-    expect(await reserve(inbox)).toEqual({
+    expect(await reserve(inbox)).toMatchObject({
       allowed: true,
       used: 1,
       limit: LIMIT,
@@ -210,7 +210,7 @@ describe('InboxQuota reservation', () => {
     const inbox = 'unmetered';
     const result = await reserve(inbox, 0);
 
-    expect(result).toEqual({ allowed: true, used: 0, limit: 0, month: MONTH });
+    expect(result).toMatchObject({ allowed: true, used: 0, limit: 0, month: MONTH });
 
     // No row may be created, or switching MONTHLY_LIMIT back on would find a
     // phantom month already present.
@@ -233,7 +233,7 @@ describe('InboxQuota reservation', () => {
     expect(await reserve(inbox, limit, '2026-08')).toMatchObject({ allowed: false });
 
     // A new month is a new row, so the inbox is immediately usable again.
-    expect(await reserve(inbox, limit, '2026-09')).toEqual({
+    expect(await reserve(inbox, limit, '2026-09')).toMatchObject({
       allowed: true,
       used: 1,
       limit,
@@ -496,7 +496,7 @@ describe('InboxQuota plans', () => {
     const inbox = 'plan-unmetered';
     await setPlan(inbox, 'self-host', 0);
     const result = await reserve(inbox, 2);
-    expect(result).toEqual({ allowed: true, used: 0, limit: 0, month: MONTH });
+    expect(result).toMatchObject({ allowed: true, used: 0, limit: 0, month: MONTH });
   });
 
   it('survives a plan being regranted', async () => {

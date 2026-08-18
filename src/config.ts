@@ -18,10 +18,11 @@ export function monthlyLimit(env: Env): number {
 export function dailyLimit(env: Env): number {
   const parsed = Number.parseInt(env.DAILY_LIMIT ?? '', 10);
   if (Number.isFinite(parsed)) return Math.max(0, parsed);
-  // An unmetered deployment stays unmetered. Deriving a floor of 25 from a
-  // monthly limit of zero would put a day cap on a Worker configured for
-  // unlimited delivery -- today the reservation short-circuits before the day
-  // ceiling is consulted, so it would only bite if that order ever changed.
+  // Derived only. An explicitly configured DAILY_LIMIT is honoured above even
+  // when MONTHLY_LIMIT is 0 -- see reserveQuota, which used to short-circuit on
+  // the monthly limit alone and silently discard a day ceiling an operator had
+  // deliberately set. A *derived* ceiling on an unmetered deployment would be
+  // the opposite mistake, so that one stays off.
   const monthly = monthlyLimit(env);
   if (monthly === 0) return 0;
   return Math.max(25, Math.ceil(monthly * 0.2));

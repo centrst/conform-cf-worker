@@ -794,7 +794,7 @@
       "post": {
         "operationId": "submitForm",
         "summary": "Submit a form",
-        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` carries the route's access key when it has one, and is stripped before delivery; `_dry_run` set to `true`/`1`/`yes`/`on` runs every check and stops before spending anything — no email, no webhook, no quota — and answers with `dry_run: true`, `delivered: false`. A dry run returns the exact error a real submission would, so it is the way to prove a form works without polluting an inbox. Unlike `_test` it is strict about its value: `_dry_run=false` submits for real. A route that has declared a schema refuses submissions that do not match it with `422 submission_invalid` and per-field detail, before spending any quota. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
+        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` carries the route's access key when it has one, and is stripped before delivery; `_dry_run` set to `true`/`1`/`yes`/`on` runs every check and stops before spending anything — no email, no webhook, no quota — and answers with `dry_run: true`, `delivered: false`. A dry run returns the exact error a real submission would for route state, access key and schema, so it is the way to prove a form works without polluting an inbox. The allowance is reported rather than refused: a spent allowance answers `200` with `would_deliver: false`, not a `429`. `quota` and `delivery` are included only when the request carried an accepted `access_key`. Unlike `_test` it is strict about its value: `_dry_run=false` submits for real. A route that has declared a schema refuses submissions that do not match it with `422 submission_invalid` and per-field detail, before spending any quota. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
         "parameters": [{ "$ref": "#/components/parameters/FormId" }],
         "requestBody": {
           "required": true,
@@ -812,7 +812,7 @@
         },
         "responses": {
           "200": {
-            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured; `test`/`echo` appear for `_test` submissions. On a `_dry_run` submission nothing was delivered: the body carries `dry_run: true`, `delivered: false`, `would_deliver`, a `delivery` plan, and a `quota` reading taken without consuming it. A dry run never redirects and never renders a thank-you page, so a `_dry_run` field shipped into a live form cannot silently swallow real submissions. HTML-accepting clients receive a result page instead.",
+            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured; `test`/`echo` appear for `_test` submissions. On a `_dry_run` submission nothing was delivered: the body carries `dry_run: true`, `delivered: false` and `would_deliver`. A caller whose `access_key` was accepted also receives the `delivery` plan and a `quota` reading taken without consuming it; an anonymous caller does not, since the form ID is public and the counters are the owner's business volume. A dry run never redirects and never renders a thank-you page, so a `_dry_run` field shipped into a live form cannot silently swallow real submissions. HTML-accepting clients receive a result page instead.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/SubmissionAccepted" }
@@ -1186,6 +1186,14 @@
             "type": "string",
             "description": "Bearer credential for minting access keys, and nothing else. Returned at creation and on idempotent replay. Safe in a CI secret, unlike `management_token`, which can delete the route and its inbox binding."
           },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "The route refuses submissions that do not carry a recognised `access_key`."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/FormSchema",
+            "description": "Present when the form has declared a shape. Published deliberately: it is derivable from the page the form is installed on, and an agent that reads it builds a submission that passes first time."
+          },
           "webhook": {
             "type": "object",
             "description": "Present when webhook delivery is configured: the signing secret, returned at creation and on idempotent replay. Treat as a secret.",
@@ -1253,7 +1261,7 @@
       },
       "InstallArtifact": {
         "type": "object",
-        "required": ["success", "framework", "files", "notes", "test_command"],
+        "required": ["success", "framework", "files", "notes", "dry_run_command", "test_command"],
         "properties": {
           "success": { "const": true },
           "framework": { "type": "string" },
@@ -1269,6 +1277,14 @@
             }
           },
           "notes": { "type": "array", "items": { "type": "string" } },
+          "dry_run_command": {
+            "type": "string",
+            "description": "Proves the install without sending anything: every check runs, no email, no webhook, no quota."
+          },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "The route refuses submissions that do not carry a recognised `access_key`."
+          },
           "test_command": {
             "type": "string",
             "description": "curl command that sends a _test-marked submission."

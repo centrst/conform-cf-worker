@@ -83,18 +83,9 @@ describe('FormRoute access keys', () => {
     expect(await keyIds(stub)).toEqual(['NEW', 'OLD']);
   });
 
-  it('keeps the newest key and the newest used key, and nothing else', async () => {
-    const { stub } = await create();
-    await post(stub, '/keys/mint', key('LIVE', '2026-08-01T00:00:00.000Z'));
-    await post(stub, '/keys/accept', { keyId: 'LIVE' });
-
-    // Two builds mint and never ship.
-    await post(stub, '/keys/mint', key('FAILED1', '2026-08-02T00:00:00.000Z'));
-    await post(stub, '/keys/mint', key('FAILED2', '2026-08-03T00:00:00.000Z'));
-
-    // The key the live site is serving survives; the abandoned mint does not.
-    expect(await keyIds(stub)).toEqual(['FAILED2', 'LIVE']);
-  });
+  // Retention as a whole is pinned by key-lifecycle.workers.test.ts, which runs
+  // the same cases through the fake the node suite uses. What is left here is
+  // the SQL those cases cannot reach.
 
   it('retires older keys only when a successor is first accepted', async () => {
     const { stub } = await create();

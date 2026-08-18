@@ -191,8 +191,6 @@ export class InboxQuota implements DurableObject {
         ? Math.max(0, Math.floor(body.limit ?? 0))
         : 0;
       const limit = this.effectiveLimit(requested);
-      if (limit === 0) return json({ allowed: true, used: 0, limit: 0, month });
-
       // Checked before the monthly row is touched, so a day-capped submission
       // never has to be un-counted. Safe to read then write without a
       // transaction: a Durable Object handles one request at a time.
@@ -200,6 +198,11 @@ export class InboxQuota implements DurableObject {
         ? Math.max(0, Math.floor(body.daily_limit ?? 0))
         : 0;
       const day = body.day ?? currentDay();
+
+      // Unmetered by the month AND by the day: nothing to count.
+      if (limit === 0 && dayLimit === 0) {
+        return json({ allowed: true, used: 0, limit: 0, month, day });
+      }
       if (dayLimit > 0) {
         const dayRows = this.sql
           .exec<{ used: number }>('SELECT used FROM daily_usage WHERE day = ?1', day)
@@ -215,6 +218,19 @@ export class InboxQuota implements DurableObject {
             day,
           });
         }
+      }
+
+      // A deployment can be unmetered monthly and still carry a day ceiling --
+      // an operator setting DAILY_LIMIT with MONTHLY_LIMIT=0 wants a rate
+      // control without a billing one. The monthly upsert below is guarded by
+      // `WHERE ?2 > 0`, so it would return no row and read as "blocked".
+      if (limit === 0) {
+        this.sql.exec(
+          `INSERT INTO daily_usage (day, used) VALUES (?1, 1)
+           ON CONFLICT(day) DO UPDATE SET used = daily_usage.used + 1`,
+          day,
+        );
+        return json({ allowed: true, used: 0, limit: 0, month, day });
       }
 
       const rows = this.sql
@@ -252,15 +268,22 @@ export class InboxQuota implements DurableObject {
       }
 
       if (dayLimit > 0) {
-        this.sql.exec(
-          `INSERT INTO daily_usage (day, used) VALUES (?1, 1)
-           ON CONFLICT(day) DO UPDATE SET used = daily_usage.used + 1`,
-          day,
-        );
-        this.sql.exec(
-          `DELETE FROM daily_usage WHERE day < ?1`,
-          new Date(Date.now() - DAILY_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10),
-        );
+        const dayRow = this.sql
+          .exec<{ used: number }>(
+            `INSERT INTO daily_usage (day, used) VALUES (?1, 1)
+             ON CONFLICT(day) DO UPDATE SET used = daily_usage.used + 1
+             RETURNING used`,
+            day,
+          )
+          .one();
+        // Prune once per day rather than once per submission: the first
+        // reservation of a day is the only one that can have anything to drop.
+        if (dayRow.used === 1) {
+          this.sql.exec(
+            `DELETE FROM daily_usage WHERE day < ?1`,
+            new Date(Date.now() - DAILY_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10),
+          );
+        }
       }
 
       const warn = this.claimWarning(month, rows[0].used, rows[0].limit_count);
@@ -269,6 +292,10 @@ export class InboxQuota implements DurableObject {
         used: rows[0].used,
         limit: rows[0].limit_count,
         month,
+        // Echoed so a rollback can decrement the day it actually counted. The
+        // reserve-to-rollback window spans a webhook timeout plus a retry, so a
+        // reservation at 23:59 can roll back tomorrow and inflate today.
+        day,
         ...(warn ? { warn } : {}),
       });
     }
@@ -410,7 +437,12 @@ export async function reserveQuota(
 ): Promise<QuotaReservation> {
   const month = currentMonth();
   const day = currentDay();
-  if (limit === 0) return { allowed: true, used: 0, limit: 0, month };
+  // Both ceilings, not just the monthly one. Short-circuiting on `limit === 0`
+  // alone threw away an explicitly configured DAILY_LIMIT on an otherwise
+  // unmetered deployment -- a rate control silently disabled by a billing one.
+  if (limit === 0 && daily === 0) {
+    return { allowed: true, used: 0, limit: 0, month, day };
+  }
   const response = await quotaRequest(env, ownerId, '/reserve', {
     limit,
     month,

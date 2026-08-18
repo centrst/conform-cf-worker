@@ -358,6 +358,11 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
     env.OWNER_HASH_SECRET,
     env.QUOTA_IDENTITY_EXCEPTIONS,
   );
+
+  // Create is configuration time too. Gating only the settings endpoint left
+  // "declare it at creation" as a one-request workaround, which made the gate
+  // decorative -- routes are free and replayable.
+  if (schema) await requireSchemaEntitlement(env, quotaKey);
   if (env.REGISTRATION_RATE_LIMITER) {
     const clientAddress = request.headers.get('cf-connecting-ip') || 'unknown';
     const clientId = await ownerIdForEmail(
@@ -382,6 +387,12 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
         delivery: requestedDelivery
           ? { mode: requestedDelivery.mode, url: requestedDelivery.webhookUrl ?? null }
           : null,
+        // Included, or retrying a create with a corrected schema returns
+        // `replayed: true` and keeps the old one -- the exact 200 an agent
+        // iterating on a declaration would read as success. `delivery`
+        // produces `idempotency_key_conflict` for the same divergence, and a
+        // schema is no less part of the request.
+        schema: schema ?? null,
       })
     : undefined;
   const derivedId = idempotencyKey
@@ -591,6 +602,38 @@ function placeholderGuidancePage(createUrl: string): Response {
  * document names the create endpoint. It used to be a Centrst marketing page,
  * which meant a self-hosted install quietly sent its own users to the vendor.
  */
+/**
+ * The published spec with this deployment's identity substituted in. Only the
+ * two fields that name an operator change; every path, schema and error code is
+ * the contract and is identical everywhere.
+ */
+function deploymentSpec(env: Env, origin: string): Record<string, unknown> {
+  const base = publicUrl(env, origin);
+  const operator = env.OPERATOR_NAME?.trim();
+  const spec = openapiSpec as unknown as {
+    info: { description: string; title: string };
+    servers: { url: string; description: string }[];
+  };
+  return {
+    ...spec,
+    info: {
+      ...spec.info,
+      description: spec.info.description.replace(
+        'conForm by Centrst turns',
+        operator ? `conForm by ${operator} turns` : 'conForm turns',
+      ),
+    },
+    servers: [
+      {
+        url: base,
+        description: operator
+          ? `conForm hosted by ${operator}.`
+          : 'This conForm deployment.',
+      },
+    ],
+  };
+}
+
 function createFormUrl(env: Env, origin: string): string {
   if (!env.DOCS_URL) return `${publicUrl(env, origin)}/`;
   const docs = env.DOCS_URL.endsWith('/') ? env.DOCS_URL : `${env.DOCS_URL}/`;
@@ -904,13 +947,13 @@ async function mintRouteKey(request: Request, env: Env, formId: string): Promise
  * who forgets to set it some revenue on their own service -- a mistake they can
  * see and fix, unlike a self-hoster hitting a wall they cannot.
  */
-async function requireSchemaEntitlement(env: Env, record: StoredRouteRecord): Promise<void> {
+async function requireSchemaEntitlement(env: Env, quotaKey: string): Promise<void> {
   if (env.PLAN_ENFORCEMENT !== 'true') return;
-  const plan = await getInboxPlan(env, record.quotaKey ?? record.ownerId);
+  const plan = await getInboxPlan(env, quotaKey);
   if (!plan.plan || plan.plan === 'free') {
     throw new ApiError(
       'schema_unavailable',
-      'Declaring a form schema requires conForm+ on this inbox.',
+      'Declaring a form schema requires a paid plan on this inbox.',
     );
   }
 }
@@ -938,8 +981,13 @@ async function updateRouteSettings(
   // `null` clears a schema; omitting the key leaves whatever is there.
   let encryptedRoute: string | undefined;
   let schema: FormSchema | undefined;
+  // Removing a schema is never gated. A customer whose plan lapsed would
+  // otherwise be refused permission to stop using the feature they can no
+  // longer pay for.
+  if (body.schema !== undefined && body.schema !== null) {
+    await requireSchemaEntitlement(env, record.quotaKey ?? record.ownerId);
+  }
   if (body.schema !== undefined) {
-    await requireSchemaEntitlement(env, record);
     schema = body.schema === null ? undefined : parseFormSchema(body.schema);
     const current = await openToken<RouteTokenPayload>(
       record.encryptedRoute,
@@ -1030,7 +1078,20 @@ async function checkAccessKey(
   parsed: { allFields: Record<string, string | string[]> },
 ): Promise<RouteAccessKey | undefined> {
   const keys = record.accessKeys ?? [];
-  if (keys.length === 0) return undefined;
+  if (keys.length === 0) {
+    // Enforcement on with nothing to enforce against must refuse, not admit.
+    // The API guard that prevents this state lives in updateRouteSettings, in
+    // another function; the Durable Object itself will accept it. An invariant
+    // held in one of two write paths is one refactor from being lost, and this
+    // one fails in the direction of silently disabling the control.
+    if (record.requireKey) {
+      throw new ApiError(
+        'access_key_required',
+        'This form requires an access_key but has none. Mint one to restore delivery.',
+      );
+    }
+    return undefined;
+  }
 
   const raw = parsed.allFields.access_key;
   const presented = (Array.isArray(raw) ? raw[0] : raw)?.trim();
@@ -1091,10 +1152,15 @@ async function submit(
   const redirect =
     parsed.redirect !== undefined ? validatedRedirect(parsed.redirect) : undefined;
   if (parsed.spam) {
-    // A dry run answers identically whether or not the trap fired. The
+    // A dry run must answer identically whether or not the trap fired. The
     // honeypot's only property is that a caller cannot tell it caught them,
     // and a validate mode that reported it would hand that away for free.
-    if (parsed.dryRun) return dryRunSuccess(request);
+    //
+    // "Identically" means the same keys, not just the same status: returning
+    // the bare envelope here while the clean path added `would_deliver` made
+    // the absence of that one field a free oracle. Two dry runs, one with the
+    // field populated, named the trap.
+    if (parsed.dryRun) return dryRunSuccess(request, { would_deliver: true });
     return submissionSuccess(request, redirect, {
       success: true,
       message: 'Submission received',
@@ -1126,10 +1192,19 @@ async function submit(
     // Two bindings, not one, because the ceilings differ: a form may legitimately
     // be busy, a single client never is. Sharing one binding is what made the
     // per-client limit silently equal to the per-form one.
+    //
+    // Keyed by client AND form. A key of client alone is shared fate across
+    // every tenant on a hosted deployment: one office NAT, one CGNAT pool or
+    // one mobile carrier exit would be capped at two submissions a minute
+    // across every customer's forms combined, and the third real visitor gets
+    // an error the form owner never hears about. That is the exact failure the
+    // per-form ceiling is deliberately kept loose to avoid. What it gives up is
+    // capping one source across many forms at once -- weak protection anyway,
+    // since each form has its own ceiling and each inbox its own day cap.
     const clientLimiter = env.SUBMISSION_CLIENT_RATE_LIMITER ?? env.SUBMISSION_RATE_LIMITER;
     const [formLimit, clientLimit] = await Promise.all([
       env.SUBMISSION_RATE_LIMITER.limit({ key: `form:${formId}` }),
-      clientLimiter.limit({ key: `client:${clientId}` }),
+      clientLimiter.limit({ key: `client:${clientId}:${formId}` }),
     ]);
     if (!formLimit.success || !clientLimit.success) {
       // Record that this inbox is being throttled, but at most once per form
@@ -1212,23 +1287,34 @@ async function submit(
     const quota = await peekQuota(env, quotaKey, monthlyLimit(env));
     const withinMonth = quota.limit === 0 || quota.used < quota.limit;
     const withinDay = dailyLimit(env) === 0 || quota.day_used < dailyLimit(env);
+    // The counters and the delivery plan are the owner's business: month-to-date
+    // volume across every form on the inbox, and whether a webhook exists at
+    // all. `/f/{id}` is unauthenticated and the form ID is in the page source,
+    // so publishing them here would make an inbox's enquiry rate pollable by
+    // anyone who scraped it. A caller holding an accepted access key has proved
+    // it is the installer; everyone else gets the answer they actually need.
+    const installer = acceptedKey !== undefined;
     return dryRunSuccess(request, {
       would_deliver: withinMonth && withinDay,
-      delivery:
-        mode === 'email'
-          ? { email: 'would send' }
-          : mode === 'webhook'
-            ? { webhook: 'would post' }
-            : { email: 'would send', webhook: 'would post' },
-      ...(quota.limit > 0
+      ...(installer
         ? {
-            quota: {
-              used: quota.used,
-              limit: quota.limit,
-              resets_at: quotaResetsAt(quota.month),
-              day_used: quota.day_used,
-              day_limit: dailyLimit(env),
-            },
+            delivery:
+              mode === 'email'
+                ? { email: 'would send' }
+                : mode === 'webhook'
+                  ? { webhook: 'would post' }
+                  : { email: 'would send', webhook: 'would post' },
+            ...(quota.limit > 0
+              ? {
+                  quota: {
+                    used: quota.used,
+                    limit: quota.limit,
+                    resets_at: quotaResetsAt(quota.month),
+                    day_used: quota.day_used,
+                    day_limit: dailyLimit(env),
+                  },
+                }
+              : {}),
           }
         : {}),
     });
@@ -1277,7 +1363,7 @@ async function submit(
   async function rollback(): Promise<void> {
     if (reservation.limit > 0) {
       try {
-        await rollbackQuota(env, quotaKey, reservation.month);
+        await rollbackQuota(env, quotaKey, reservation.month, reservation.day);
       } catch {
         // The delivery failed, so the response remains an error even if rollback
         // also fails. No form fields are included in logs or error messages.
@@ -1404,7 +1490,14 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
 
   if (url.pathname === '/openapi.json') {
     if (request.method !== 'GET') return methodNotAllowed('GET, OPTIONS');
-    return json(openapiSpec, 200, { 'Cache-Control': 'public, max-age=300' });
+    // Rewritten per deployment, like the discovery document and llms.txt beside
+    // it. Served verbatim, this told every agent reading a self-hoster's own
+    // discovery chain that the API was "by Centrst" and lived at
+    // api.conform.centrst.com -- so an agent following servers[0].url would
+    // create the customer's form on somebody else's service.
+    return json(deploymentSpec(env, url.origin), 200, {
+      'Cache-Control': 'public, max-age=300',
+    });
   }
 
   if (url.pathname === '/llms.txt') {

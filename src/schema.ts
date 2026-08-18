@@ -63,12 +63,27 @@ const MAX_SCHEMA_FIELDS = 100;
 const MAX_OPTIONS = 100;
 const MAX_PATTERN_LENGTH = 200;
 /**
- * A caller-supplied pattern is caller-supplied backtracking. Cloudflare kills a
- * request that burns its CPU budget, so the blast radius is the one submission
- * that triggered it -- but there is no point handing a pathological regex a
- * long subject, so the tested value is bounded too.
+ * The subject a pattern is tested against is truncated to this, never skipped.
+ *
+ * This cap does NOT bound a pathological pattern, and an earlier comment here
+ * claimed it did. `^(a+)+$` against 47 characters backtracks for over a minute;
+ * subject length is not the control, the pattern is. See PATTERN_PROBES.
  */
 const MAX_PATTERN_SUBJECT = 4096;
+
+/**
+ * Probes run only after the structural check below, so they terminate by
+ * construction: a pattern with star height 1 backtracks at worst exponentially
+ * in the subject, and 24 characters bounds that to a few hundred milliseconds.
+ * Timing a regex that might never return is not a check -- it hangs with it.
+ */
+const PATTERN_PROBES = [
+  `${'a'.repeat(24)}!`,
+  `${'0'.repeat(24)}!`,
+  `${'a '.repeat(12)}!`,
+  `${`${'a'.repeat(4)}@`.repeat(4)}!`,
+];
+const PATTERN_PROBE_BUDGET_MS = 25;
 
 // Leading underscores are reserved for conForm's own fields, so a schema can
 // never declare one and `strict` can always exempt them.
@@ -76,6 +91,73 @@ const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 
 const TRUE_VALUES = new Set(['true', '1', 'yes', 'on']);
 const FALSE_VALUES = new Set(['false', '0', 'no', 'off', '']);
+
+/** True if `body` contains a quantifier outside a character class. */
+function containsQuantifier(body: string): boolean {
+  let inClass = false;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (inClass) {
+      if (character === ']') inClass = false;
+      continue;
+    }
+    if (character === '[') {
+      inClass = true;
+      continue;
+    }
+    if (character === '*' || character === '+') return true;
+    if (character === '{' && /^\{\d+,\d*\}/u.test(body.slice(index))) return true;
+  }
+  return false;
+}
+
+/**
+ * Star height above 1 -- a quantifier applied to a group that itself contains
+ * one, as in `(a+)+` or `(?:\d*)*`. Its cost is exponential in the SUBJECT, so
+ * no subject cap bounds it: `^(a+)+$` against 47 characters runs for over a
+ * minute, and an earlier comment in this file claimed the 4096-character cap
+ * made that safe.
+ *
+ * Checked structurally rather than by timing, because a timed check cannot
+ * report on a regex that never returns.
+ */
+function hasNestedQuantifier(source: string): boolean {
+  const opens: number[] = [];
+  let inClass = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '\\') {
+      index += 1;
+      continue;
+    }
+    if (inClass) {
+      if (character === ']') inClass = false;
+      continue;
+    }
+    if (character === '[') {
+      inClass = true;
+      continue;
+    }
+    if (character === '(') {
+      opens.push(index);
+      continue;
+    }
+    if (character === ')') {
+      const open = opens.pop();
+      if (open === undefined) continue;
+      const next = source[index + 1];
+      // `?` is excluded: `(a+)?` is linear. Only unbounded repetition compounds.
+      if (next === '*' || next === '+' || next === '{') {
+        if (containsQuantifier(source.slice(open + 1, index))) return true;
+      }
+    }
+  }
+  return false;
+}
 
 function fail(message: string): never {
   throw new ApiError('invalid_schema', message);
@@ -152,10 +234,28 @@ export function parseFormSchema(value: unknown): FormSchema {
       if (spec.pattern.length > MAX_PATTERN_LENGTH) {
         fail(`Field "${name}": pattern may be at most ${MAX_PATTERN_LENGTH} characters`);
       }
+      let compiled: RegExp;
       try {
-        new RegExp(spec.pattern, 'u');
+        compiled = new RegExp(spec.pattern, 'u');
       } catch {
         fail(`Field "${name}": pattern is not a valid regular expression`);
+      }
+      if (hasNestedQuantifier(spec.pattern)) {
+        fail(
+          `Field "${name}": pattern nests a quantifier inside a quantified group ` +
+            '(such as (a+)+), which backtracks catastrophically. Rewrite it without ' +
+            'the inner repetition.',
+        );
+      }
+      for (const probe of PATTERN_PROBES) {
+        const started = Date.now();
+        compiled.test(probe);
+        if (Date.now() - started > PATTERN_PROBE_BUDGET_MS) {
+          fail(
+            `Field "${name}": pattern backtracks catastrophically on ordinary input. ` +
+              'Avoid a quantifier inside a quantified group, such as (a+)+ or (a|a)*.',
+          );
+        }
       }
       pattern = spec.pattern;
     }
@@ -287,12 +387,31 @@ function checkValue(name: string, value: string, spec: FieldSpec): FieldError[] 
       }
     }
   }
-  if (spec.pattern !== undefined && value.length <= MAX_PATTERN_SUBJECT) {
-    if (!new RegExp(spec.pattern, 'u').test(value)) {
+  if (spec.pattern !== undefined) {
+    // Truncate, never skip. Skipping above the cap made every `pattern`
+    // bypassable by padding the value past it -- and MAX_FIELD_LENGTH defaults
+    // to 20000, five times the cap. Truncating fails closed: an anchored
+    // pattern stops matching, which is the right direction for a validator.
+    if (!patternFor(spec.pattern).test(value.slice(0, MAX_PATTERN_SUBJECT))) {
       push('pattern_mismatch', `"${name}" is not in the expected format`);
     }
   }
   return errors;
+}
+
+/**
+ * Patterns are recompiled per request, because the schema is decrypted out of
+ * the route token on every submission. Cheap, but not free, and the same few
+ * sources recur forever.
+ */
+const patternCache = new Map<string, RegExp>();
+
+function patternFor(source: string): RegExp {
+  const cached = patternCache.get(source);
+  if (cached) return cached;
+  const compiled = new RegExp(source, 'u');
+  if (patternCache.size < 256) patternCache.set(source, compiled);
+  return compiled;
 }
 
 function values(value: SubmissionValue): string[] {
@@ -314,7 +433,7 @@ export function validateSubmission(
   const errors: FieldError[] = [];
 
   for (const [name, spec] of Object.entries(schema.fields)) {
-    const raw = fields[name];
+    const raw = Object.hasOwn(fields, name) ? fields[name] : undefined;
     const present = raw !== undefined && values(raw).some((entry) => entry.trim() !== '');
 
     if (!present) {
@@ -345,7 +464,16 @@ export function validateSubmission(
 
   if (schema.strict) {
     for (const name of Object.keys(fields)) {
-      if (schema.fields[name] === undefined) {
+      // Reserved for conForm, and exempt as the field-name rule promises. This
+      // also covers the tracking fields a page adds without telling the form
+      // (_utm_source and friends), which a strict form used to reject.
+      if (name.startsWith('_')) continue;
+      // `Object.hasOwn`, not `=== undefined`. The schema arrives via JSON.parse
+      // out of the sealed token, so it carries Object.prototype: a field named
+      // `constructor`, `toString` or `valueOf` resolved to an inherited member
+      // and was waved through as declared. Building the object with
+      // Object.create(null) would not help -- the JSON round trip undoes it.
+      if (!Object.hasOwn(schema.fields, name)) {
         errors.push({
           field: name,
           code: 'unknown_field',

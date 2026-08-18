@@ -79,8 +79,8 @@ The destination is encrypted with AES-GCM before it is written. The opaque inbox
 ID is an HMAC of the normalized destination email. It lets forms for the same
 inbox share quota without using the email as a database key.
 
-Access keys are stored as HMACs, never as values, so route storage is useless
-to anyone who reads it. A key value exists exactly once, in the response to the
+Access keys are stored as HMACs, never as values, so a reader of route storage
+cannot recover a key. A key value exists exactly once, in the response to the
 request that minted it.
 
 The only customer-authored value stored in plaintext is the alias. The
@@ -625,8 +625,10 @@ Run it in CI on every build and the key a scraper harvested goes stale at your
 next deploy, with nobody noticing anything:
 
 ```sh
-KEY=$(curl -sX POST https://forms.example.com/v1/routes/$FORM_ID/keys \
-  --header "Authorization: Bearer $CONFORM_ROTATION_TOKEN" | jq -r .key)
+# -f and jq -e matter: without them a 429, a wrong token or a 404 all yield the
+# literal string "null", and the build cheerfully ships a form posting it.
+KEY=$(curl -fsX POST "https://forms.example.com/v1/routes/$FORM_ID/keys" \
+  --header "Authorization: Bearer $CONFORM_ROTATION_TOKEN" | jq -er .key) || exit 1
 echo "PUBLIC_CONFORM_ACCESS_KEY=$KEY" >> .env
 yarn build && yarn deploy
 ```
@@ -700,6 +702,19 @@ source, where a per-client cap does nothing.
 that is inside the byte cap but absurd in shape. Refused submissions never
 reserve quota — validation runs before the reservation.
 
+The two submission limiters are **bindings**, not vars, and they fail differently
+when absent. Upgrading a customised `wrangler.toml` means adding namespace ids
+`17004` and `17005` as well:
+
+| Binding | Absent means |
+| --- | --- |
+| `SUBMISSION_CLIENT_RATE_LIMITER` (17004) | the per-client cap silently falls back to the per-form one |
+| `ROTATION_RATE_LIMITER` (17005) | **no limit at all** on key minting |
+
+The client key is scoped per form. A key of client alone is shared fate across
+tenants: one office NAT would be capped across every customer's forms at once,
+and the third real visitor that minute gets an error nobody hears about.
+
 ## Proving a form works without sending anything
 
 `_dry_run` runs every check and stops before spending anything:
@@ -722,9 +737,18 @@ curl -sX POST https://forms.example.com/f/cfm_… \
 ```
 
 No email, no webhook, no quota. It checks the route is active, the access key
-matches, the submission matches the declared schema, and the allowance has room
-— and **returns the exact error a real submission would**, so it is the way to
+matches, and the submission matches the declared schema — and for each of those
+it **returns the exact error a real submission would**, so it is the way to
 verify an install without polluting an inbox.
+
+The allowance is the one exception: a dry run *reports* it rather than refusing
+on it. A spent allowance answers `200` with `would_deliver: false`, where a real
+submission answers `429`.
+
+`quota` and `delivery` appear only for a caller whose `access_key` was accepted.
+`/f/{id}` is unauthenticated and the form ID sits in your page source, so
+publishing month-to-date volume there would make an inbox's enquiry rate
+pollable by anyone who scraped a form.
 
 `_test` still exists and is a different thing: it delivers a real email with a
 `[Test]` subject and consumes one quota unit, which is what you want when the
@@ -739,9 +763,9 @@ Three deliberate properties:
 - **Never redirects, never renders a thank-you page.** The HTML result reads
   *Dry run — nothing was sent*. A `_dry_run` shipped into production announces
   itself instead of silently swallowing a month of enquiries.
-- **A honeypot hit answers identically.** Reporting it would let anyone use the
-  dry run to find the trap, and not being able to tell is the honeypot's only
-  property.
+- **A honeypot hit answers identically** — the same fields, not merely the same
+  status. Reporting it would let anyone use the dry run to find the trap, and
+  not being able to tell is the honeypot's only property.
 
 The honest cost: a dry run makes probing a form cheaper and quieter than
 submitting for real. The submission rate limiter still applies, which bounds it

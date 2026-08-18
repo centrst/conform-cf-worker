@@ -309,7 +309,23 @@ describe('key rotation', () => {
 
     const response = await submit(env, { message: 'two', access_key: live });
     expect(response.status).toBe(200);
-    expect(routes.get(TEST_FORM_ID)?.accessKeys).toHaveLength(2);
+  });
+
+  it('a key deployed before anyone has submitted survives failed builds', async () => {
+    // The case the previous test could not reach: it submitted first, which
+    // marked the key used. A form with no traffic yet has no such evidence,
+    // and the old rule evicted the only key any browser was carrying.
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    await installRoute(env, routes, { requireKey: true });
+    const token = await rotationToken(env);
+
+    const deployed = (await mintKey(env, token)).body.key as string;
+    await mintKey(env, token);
+    await mintKey(env, token);
+
+    const response = await submit(env, { message: 'first ever', access_key: deployed });
+    expect(response.status).toBe(200);
   });
 });
 

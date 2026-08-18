@@ -105,9 +105,11 @@ namespace_id = "17002"
 limit = 5
 period = 60
 
-# Per client. A separate binding because a binding carries one limit, which is
-# why the asymmetry described here was never actually in effect: both keys ran
-# against the same counter. A human submits once; two survives a double-click.
+# Per client, per form. A separate binding because a binding carries one limit,
+# which is why the asymmetry described here was never actually in effect: both
+# keys ran against the same counter. A human submits to one form once; two
+# survives a double-click. The key includes the form id so that one NAT gateway
+# cannot exhaust a stranger's budget on a shared deployment.
 [[ratelimits]]
 name = "SUBMISSION_CLIENT_RATE_LIMITER"
 namespace_id = "17004"

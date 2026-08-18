@@ -1,5 +1,12 @@
 import openapiSpec from '../openapi.json';
-import { deliveryMode, maxRequestSize, monthlyLimit } from './config';
+import {
+  dailyLimit,
+  deliveryMode,
+  maxFieldLength,
+  maxFields,
+  maxRequestSize,
+  monthlyLimit,
+} from './config';
 import { POLL_INTERVAL_SECONDS } from './contract';
 import { publicUrl } from './email';
 import type { Env } from './types';
@@ -45,20 +52,15 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
         path: '/v1/routes/{form_id}/claim',
         auth: 'Bearer management_token',
       },
-      declare_schema: {
-        method: 'POST',
-        path: '/v1/routes/{form_id}/settings',
-        auth: 'Bearer management_token',
-      },
       rotate_access_key: {
         method: 'POST',
         path: '/v1/routes/{form_id}/keys',
-        auth: 'Bearer rotation_token',
+        auth: 'Bearer rotation_token or management_token',
       },
       list_access_keys: {
         method: 'GET',
         path: '/v1/routes/{form_id}/keys',
-        auth: 'Bearer rotation_token',
+        auth: 'Bearer rotation_token or management_token',
       },
       route_settings: {
         method: 'POST',
@@ -87,7 +89,10 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
     test_submissions: { field: '_test', value: 'true' },
     limits: {
       monthly_submissions_per_inbox: monthlyLimit(env),
+      daily_submissions_per_inbox: dailyLimit(env),
       max_request_bytes: maxRequestSize(env),
+      max_fields: maxFields(env),
+      max_field_length: maxFieldLength(env),
       registrations_per_minute: 5,
     },
     delivery_mode: deliveryMode(env),
@@ -99,10 +104,13 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
         'alias',
         'opaque inbox id',
         'encrypted destination',
+        'encrypted form schema, when declared',
         'verification status',
+        'access-key enforcement flag',
+        'access-key HMACs, never key values',
         'Cloudflare destination id',
       ],
-      quota: ['opaque inbox id', 'UTC month', 'used count', 'limit'],
+      quota: ['opaque inbox id', 'UTC month', 'UTC day', 'used count', 'limit'],
       account_form_index: ['opaque inbox id', 'form ids', 'created timestamps'],
       workers_kv: false,
     },
@@ -127,7 +135,8 @@ export function llmsText(env: Env, origin: string): string {
 Key facts for agents
 
 - API base: ${base} — discovery: GET / or /.well-known/conform.json
-- Create: POST /v1/routes {"email":"you@example.com","alias":"Contact"} -> {form_id, endpoint, status, management_token}
+- Create: POST /v1/routes {"email":"you@example.com","alias":"Contact"} -> {form_id, endpoint, status, management_token, rotation_token}
+  management_token deletes the route; rotation_token only mints access keys, so it is the one that belongs in CI.
 - Send an Idempotency-Key header so retries return the SAME endpoint instead of minting new ones.
 - One human step: the destination inbox must confirm a verification email before
   delivery starts. Poll GET /v1/routes/{form_id} (next_action tells you exactly
@@ -136,12 +145,15 @@ Key facts for agents
 - Prove a form works WITHOUT sending anything: include _dry_run=true. Every check runs
   (route active, access key, declared schema, allowance) and nothing is spent — no email,
   no webhook, no quota. The response is {dry_run:true, delivered:false, would_deliver, quota}.
-  Errors are byte-identical to a real submission's, so this is the cheapest way to verify an install.
+  Errors are byte-identical to a real submission's for route state, access key and schema, so this is
+  the cheapest way to verify an install. The allowance is REPORTED, not refused: a spent allowance
+  answers 200 with would_deliver:false where a real submission answers 429. quota and delivery are
+  included only when the request carried an accepted access_key.
 - Test real end-to-end delivery: include _test=true; a real email arrives with a [Test] subject and
   the response echoes test:true as proof. This DOES consume one quota unit. A test response WITHOUT
   test:true means the submission was spam-filtered — never populate the hidden _gotcha field.
 - Clean up: DELETE /v1/routes/{form_id} with "Authorization: Bearer <management_token>".
-- Optional declared shape (conForm+): pass "schema" on POST /v1/routes, or POST
+- Optional declared shape${env.PLAN_ENFORCEMENT === 'true' ? ' (conForm+)' : ''}: pass "schema" on POST /v1/routes, or POST
   /v1/routes/{form_id}/settings {"schema": {...}} with the management token. Fields declare
   type (text|email|tel|url|integer|number|date|time|datetime|boolean|choice), required, min, max,
   min_length, max_length, pattern, options, multiple. A submission that does not match is refused

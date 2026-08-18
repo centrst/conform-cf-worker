@@ -9,6 +9,15 @@ function json(data: unknown, status = 200): Response {
 // verified-mode human can be slow to click Cloudflare's email.
 const PENDING_ROUTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * How many recent keys a route keeps when none of them has proved itself yet.
+ * A window rather than a guess: the object cannot know which key a deploy
+ * shipped, so it keeps enough that a run of failed builds cannot evict the one
+ * the live site is serving. The window collapses the moment any key is
+ * accepted -- see the accept handler, which retires everything older.
+ */
+const MAX_LIVE_KEYS = 5;
+
 export class FormRoute implements DurableObject {
   private readonly sql: SqlStorage;
   private readonly ctx: DurableObjectState;
@@ -209,32 +218,32 @@ export class FormRoute implements DurableObject {
         key.hash,
         key.createdAt,
       );
-      // What must survive a mint is whatever key the live site is serving, and
-      // the object cannot know which that is. Two proxies cover it:
+      // Keep the newest few keys, plus the newest key that has been accepted.
       //
-      //   - the newest key that has been used. It reached a real visitor, so it
-      //     was live. This is what keeps a failed deploy from evicting the key
-      //     the site is still handing out.
-      //   - failing that, the second-newest key. On a route where nothing has
-      //     been submitted yet there is no evidence to go on, and the key
-      //     before this one is the best guess at what shipped.
+      // An earlier version kept exactly two by guessing which key was live:
+      // the newest, and the newest *used*, falling back to the second-newest
+      // when nothing had been used. `usedAt` is a bad proxy for "deployed" and
+      // it fails in both directions. It lags -- a key that shipped to a
+      // low-traffic form nobody has submitted to yet looks abandoned, so two
+      // further builds evicted the only key any browser was carrying. And it
+      // leads -- a visitor on a page cached before a deploy marks the OLD key
+      // used, promoting it over the one the deploy actually shipped.
       //
-      // Everything else is a mint some pipeline abandoned, and dropping it
-      // costs nobody a working form.
+      // Both states are reachable from the documented workflow (mint on every
+      // build), and the dry run makes the first one permanent, since a dry run
+      // deliberately never marks a key used. So the object stops guessing: it
+      // keeps a bounded window of recent keys, and retirement happens where
+      // there is real evidence -- on accept, below.
       this.sql.exec(
         `DELETE FROM access_key
          WHERE key_id NOT IN (
-           SELECT key_id FROM access_key ORDER BY seq DESC LIMIT 1
+           SELECT key_id FROM access_key ORDER BY seq DESC LIMIT ?1
          )
          AND key_id NOT IN (
            SELECT key_id FROM access_key WHERE used_at IS NOT NULL
            ORDER BY seq DESC LIMIT 1
-         )
-         AND key_id NOT IN (
-           SELECT key_id FROM access_key
-           WHERE NOT EXISTS (SELECT 1 FROM access_key WHERE used_at IS NOT NULL)
-           ORDER BY seq DESC LIMIT 1 OFFSET 1
          )`,
+        MAX_LIVE_KEYS,
       );
       return json({ keys: this.keys() }, 201);
     }

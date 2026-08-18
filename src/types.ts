@@ -199,7 +199,7 @@ export interface StoredRouteRecord {
   requestHash?: string;
   /** Opaque billing-identity hash; falls back to ownerId for legacy rows. */
   quotaKey?: string;
-  /** Current key first, then the one it superseded. Never more than two. */
+  /** Newest first. Bounded by MAX_LIVE_KEYS in routes.ts, plus the newest accepted key. */
   accessKeys?: RouteAccessKey[];
   /** When set, a submission without a recognised access key is refused. */
   requireKey?: boolean;

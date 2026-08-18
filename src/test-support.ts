@@ -12,6 +12,9 @@ import type {
 
 export const TEST_FORM_ID = 'cfm_ABCDEFGHJKLMNPQR';
 
+/** Must match MAX_LIVE_KEYS in routes.ts. Pinned by key-lifecycle.workers.test.ts. */
+const MAX_LIVE_KEYS = 5;
+
 export function secret(fill: number): string {
   const bytes = new Uint8Array(32);
   bytes.fill(fill);
@@ -157,14 +160,12 @@ export function routeNamespace(
             const all = [minted, ...existing].sort(
               (first, second) => (second.seq ?? 0) - (first.seq ?? 0),
             );
-            // Mirrors FormRoute: keep the newest key, the newest used key,
-            // and -- when nothing has been used yet -- the second newest, which
-            // is the best available guess at what the live page is carrying.
+            // Mirrors FormRoute: a bounded window of recent keys, plus the
+            // newest key that has been accepted. See routes.ts for why the
+            // object stops trying to guess which key a deploy shipped.
             const newestUsed = all.find((key) => key.usedAt);
-            const fallback = newestUsed ? undefined : all[1];
-            const keys = all.filter(
-              (key) => key === all[0] || key === newestUsed || key === fallback,
-            );
+            const window = all.slice(0, MAX_LIVE_KEYS);
+            const keys = all.filter((key) => window.includes(key) || key === newestUsed);
             records.set(formId, { ...record, accessKeys: keys });
             return Response.json({ keys }, { status: 201 });
           }
