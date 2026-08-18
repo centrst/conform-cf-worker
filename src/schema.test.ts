@@ -913,7 +913,7 @@ describe('schema entitlement', () => {
   });
 
   it('does not gate a deployment that bills nobody', async () => {
-    // This Worker is MIT and meant to be run by other people. Gating by default
+    // Running this engine yourself is a Permitted Purpose. Gating by default
     // would refuse the feature permanently to anyone running it themselves,
     // with no way to grant themselves the plan that unlocks it.
     const routes = new Map<string, StoredRouteRecord>();

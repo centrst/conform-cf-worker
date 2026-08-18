@@ -1,4 +1,9 @@
 /**
+ * MIT licensed — see LICENSE-SNIPPETS. This file and everything it generates
+ * are deliberately under different terms from the rest of the repository,
+ * because these artifacts end up inside other people's websites and nobody
+ * should inherit an obligation from a form they pasted out of the docs.
+ *
  * Generated install artifacts. These are tested contract surface
  * (install.test.ts) — change templates and their tests together.
  *

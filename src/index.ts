@@ -650,9 +650,10 @@ async function managedRoute(
  * plan later lapses -- silently turning a form's own rules off would be a worse
  * failure than anything the rules prevent.
  *
- * Off unless an operator turns it on. This Worker is MIT and meant to be run by
- * other people: a deployment that gates by default would refuse the feature to
- * every self-hoster with no way to grant themselves the plan that unlocks it.
+ * Off unless an operator turns it on. Running this engine yourself is a
+ * Permitted Purpose, so a deployment that gates by default would refuse the
+ * feature to every self-hoster with no way to grant themselves the plan that
+ * unlocks it.
  * The gate is a billing control for whoever charges for this, not a lock on the
  * code.
  *

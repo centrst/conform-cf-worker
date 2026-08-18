@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "summary": "Form-to-email endpoints with no account requirement.",
     "description": "conForm by Centrst turns one POST into a permanent form endpoint that delivers submissions to a verified inbox. No API key or signup is required. The only human step: the destination inbox must confirm a verification email before delivery starts — poll the route status until `status` is `active`; the endpoint URL never changes while pending. Every response is JSON (except the HTML verification page); every failure carries a stable `error` code from `x-conform-error-codes` plus a `retryable` flag. Submissions are never stored: fields exist in Worker memory only for the duration of delivery. Self-hosted deployments of the open-source Worker expose this same API at their own origin.",
-    "license": { "name": "MIT", "identifier": "MIT" }
+    "license": { "name": "FSL-1.1-ALv2", "url": "https://fsl.software/" }
   },
   "servers": [
     {
@@ -1320,7 +1320,7 @@
       },
       "InstallArtifact": {
         "type": "object",
-        "required": ["success", "framework", "files", "notes", "dry_run_command", "test_command"],
+        "required": ["success", "framework", "files", "notes", "license", "dry_run_command", "test_command"],
         "properties": {
           "success": { "const": true },
           "framework": { "type": "string" },
@@ -1336,6 +1336,11 @@
             }
           },
           "notes": { "type": "array", "items": { "type": "string" } },
+          "license": {
+            "type": "string",
+            "const": "MIT",
+            "description": "The licence of the generated artifact, stated on the artifact itself so an agent never has to infer it from the repository the engine came out of. The engine is FSL-1.1-ALv2; what you paste into your site is MIT and carries no obligation."
+          },
           "dry_run_command": {
             "type": "string",
             "description": "Proves the install without sending anything: every check runs, no email, no webhook, no quota."

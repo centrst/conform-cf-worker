@@ -19,7 +19,7 @@
     "forms",
     "privacy"
   ],
-  "license": "MIT",
+  "license": "FSL-1.1-ALv2",
   "packageManager": "yarn@4.5.0",
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
