@@ -54,11 +54,29 @@ describe('quota warning email', () => {
   it('points at conForm+ for a bigger hosted allowance', async () => {
     const { env, sent } = envWithMailbox();
     env.DOCS_URL = 'https://centrst.com/conform/docs/';
+    env.OPERATOR_NAME = 'Centrst';
 
     await sendQuotaWarning(env, route, 250, 250, '2026-08');
 
     expect(sent[0].text).toContain('conForm+');
     expect(sent[0].text).toContain('https://centrst.com/conform/#conform-plus');
+  });
+
+  it('sells nothing on a deployment that names no operator', async () => {
+    // DOCS_URL means "publishes docs", and the README tells self-hosters to set
+    // it. Deriving an upsell from it sent a self-hoster's own customers vendor
+    // marketing, from the self-hoster's From address, to a dead anchor.
+    const { env, sent } = envWithMailbox();
+    env.DOCS_URL = 'https://example.com/forms/docs/';
+    delete env.OPERATOR_NAME;
+
+    await sendQuotaWarning(env, route, 250, 250, '2026-08');
+
+    expect(sent[0].text).not.toContain('conForm+');
+    expect(sent[0].text).not.toContain('#conform-plus');
+    // The upstream SOURCE_URL default stays: a self-hoster running unmodified
+    // code genuinely came from that repository, and the README documents
+    // overriding it. That is provenance, not an upsell.
   });
 
   it('omits conForm+ on a deployment that advertises no docs', async () => {

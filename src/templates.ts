@@ -48,23 +48,36 @@ const FIELDS_HTML = `  <p>
     <textarea id="cf-message" name="message" rows="5" required></textarea>
   </p>`;
 
-function htmlTemplate(endpoint: string): string {
+/**
+ * Replaced at build time, not by conForm: the Worker stores only a hash of a
+ * key, so it cannot bake the value into an artifact -- and should not, since a
+ * pipeline that mints on every build gives the form a different key each time.
+ */
+export const ACCESS_KEY_PLACEHOLDER = '{{CONFORM_ACCESS_KEY}}';
+
+function accessKeyField(enabled: boolean, indent: string, selfClosing: boolean): string {
+  if (!enabled) return '';
+  const close = selfClosing ? ' />' : '>';
+  return `\n${indent}<input type="hidden" name="access_key" value="${ACCESS_KEY_PLACEHOLDER}"${close}`;
+}
+
+function htmlTemplate(endpoint: string, withKey: boolean): string {
   return `<!-- conForm contact form — plain HTML, no JavaScript required.
      Successful posts show a hosted confirmation page; add a hidden
      _redirect field with an https:// URL to return visitors to your site. -->
 <form action="${endpoint}" method="post">
 ${FIELDS_HTML}
-${HONEYPOT_HTML}
+${HONEYPOT_HTML}${accessKeyField(withKey, '  ', false)}
   <button type="submit">Send message</button>
 </form>
 `;
 }
 
-function jsTemplate(endpoint: string): string {
+function jsTemplate(endpoint: string, withKey: boolean): string {
   return `<!-- conForm contact form with fetch enhancement. Works without JavaScript too. -->
 <form id="conform-form" action="${endpoint}" method="post">
 ${FIELDS_HTML}
-${HONEYPOT_HTML}
+${HONEYPOT_HTML}${accessKeyField(withKey, '  ', false)}
   <button type="submit">Send message</button>
   <p id="conform-status" role="status" aria-live="polite"></p>
 </form>
@@ -99,7 +112,7 @@ ${HONEYPOT_HTML}
 `;
 }
 
-function reactTemplate(endpoint: string): string {
+function reactTemplate(endpoint: string, withKey: boolean): string {
   return `import { useState } from 'react';
 
 // conForm contact form. No client library required — plain fetch.
@@ -145,7 +158,7 @@ export default function ContactForm() {
       <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
         <label htmlFor="cf-gotcha">Leave this field empty</label>
         <input id="cf-gotcha" type="text" name="_gotcha" tabIndex={-1} autoComplete="off" />
-      </div>
+      </div>${accessKeyField(withKey, '      ', true)}
       <button type="submit">Send message</button>
       <p role="status" aria-live="polite">{status}</p>
     </form>
@@ -154,13 +167,13 @@ export default function ContactForm() {
 `;
 }
 
-function nextjsTemplate(endpoint: string): string {
+function nextjsTemplate(endpoint: string, withKey: boolean): string {
   return `'use client';
 
-${reactTemplate(endpoint)}`;
+${reactTemplate(endpoint, withKey)}`;
 }
 
-function vueTemplate(endpoint: string): string {
+function vueTemplate(endpoint: string, withKey: boolean): string {
   return `<script setup>
 import { ref } from 'vue';
 
@@ -206,7 +219,7 @@ async function handleSubmit(event) {
     <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
       <label for="cf-gotcha">Leave this field empty</label>
       <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off">
-    </div>
+    </div>${accessKeyField(withKey, '    ', false)}
     <button type="submit">Send message</button>
     <p role="status" aria-live="polite">{{ status }}</p>
   </form>
@@ -214,7 +227,7 @@ async function handleSubmit(event) {
 `;
 }
 
-function svelteTemplate(endpoint: string): string {
+function svelteTemplate(endpoint: string, withKey: boolean): string {
   return `<script>
   // conForm contact form. No client library required — plain fetch.
   let status = '';
@@ -257,14 +270,14 @@ function svelteTemplate(endpoint: string): string {
   <div aria-hidden="true" style="position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden;">
     <label for="cf-gotcha">Leave this field empty</label>
     <input id="cf-gotcha" type="text" name="_gotcha" tabindex="-1" autocomplete="off" />
-  </div>
+  </div>${accessKeyField(withKey, '  ', true)}
   <button type="submit">Send message</button>
   <p role="status" aria-live="polite">{status}</p>
 </form>
 `;
 }
 
-function astroTemplate(endpoint: string): string {
+function astroTemplate(endpoint: string, withKey: boolean): string {
   return `---
 // conForm contact form. Static HTML with a small enhancement script;
 // works without JavaScript too.
@@ -272,7 +285,7 @@ function astroTemplate(endpoint: string): string {
 
 <form id="conform-form" action="${endpoint}" method="post">
 ${FIELDS_HTML}
-${HONEYPOT_HTML}
+${HONEYPOT_HTML}${accessKeyField(withKey, '  ', false)}
   <button type="submit">Send message</button>
   <p id="conform-status" role="status" aria-live="polite"></p>
 </form>
@@ -315,7 +328,7 @@ const FILE_NAMES: Record<Framework, string> = {
   nextjs: 'ContactForm.jsx',
 };
 
-const BUILDERS: Record<Framework, (endpoint: string) => string> = {
+const BUILDERS: Record<Framework, (endpoint: string, withKey: boolean) => string> = {
   html: htmlTemplate,
   js: jsTemplate,
   react: reactTemplate,
@@ -329,20 +342,32 @@ export function isFramework(value: string): value is Framework {
   return (FRAMEWORKS as readonly string[]).includes(value);
 }
 
-export function installFiles(framework: Framework, endpoint: string): InstallFile[] {
-  return [{ path: FILE_NAMES[framework], content: BUILDERS[framework](endpoint) }];
+export function installFiles(
+  framework: Framework,
+  endpoint: string,
+  withKey = false,
+): InstallFile[] {
+  return [{ path: FILE_NAMES[framework], content: BUILDERS[framework](endpoint, withKey) }];
 }
 
-export function installNotes(framework: Framework): string[] {
+export function installNotes(framework: Framework, withKey = false): string[] {
   const notes = [
     'This generated code is MIT licensed and carries no obligations, whatever licence the delivery engine uses.',
     'Submissions deliver only after the destination inbox is verified — poll the status URL until status is "active". The endpoint URL will not change.',
     'The hidden _gotcha field is a spam trap. Keep it in the form and never fill it.',
-    'Verify delivery with a marked test: add _test=true to a submission; the response returns test: true as proof and the email arrives with a [Test] subject.',
+    'Check the install without sending anything: add _dry_run=true to a submission. Every check runs — route active, access key, declared schema, allowance — and nothing is spent. Errors are identical to a real submission\u2019s.',
+    'Verify real delivery with a marked test: add _test=true; the response returns test: true as proof and the email arrives with a [Test] subject. This does consume one quota unit.',
   ];
   if (framework === 'html') {
     notes.push(
       'Add a hidden _redirect input with an absolute https:// URL to return visitors to your own thank-you page after delivery.',
+    );
+  }
+  if (withKey) {
+    notes.push(
+      `Replace ${ACCESS_KEY_PLACEHOLDER} at build time with a key minted from POST /v1/routes/{form_id}/keys. Mint on every build: the key a scraper harvests from your published page then goes stale at your next deploy.`,
+      'The key it replaces keeps working until the new one is first accepted, so a build that mints and then fails to deploy leaves the live form working.',
+      'An access key is not proof of origin — inlined into a public page it is as public as the endpoint URL. It makes rotation free, and it is a real secret only if you post from your own backend instead of the browser.',
     );
   }
   return notes;
@@ -350,4 +375,9 @@ export function installNotes(framework: Framework): string[] {
 
 export function testCommand(endpoint: string): string {
   return `curl -sS -X POST ${endpoint} -d 'name=Test&email=test@example.com&message=Hello from a test&_test=true'`;
+}
+
+/** Proves the install without sending mail or spending allowance. */
+export function dryRunCommand(endpoint: string): string {
+  return `curl -sS -X POST ${endpoint} -d 'name=Test&email=test@example.com&message=Checking the install&_dry_run=true'`;
 }

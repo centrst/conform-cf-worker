@@ -139,6 +139,203 @@
         }
       }
     },
+    "/v1/routes/{formId}/keys": {
+      "get": {
+        "operationId": "listRouteAccessKeys",
+        "summary": "List a route's access keys",
+        "description": "Each live key by label and state. Key values are returned only when minted, and are stored only as HMACs.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <rotation_token>` or `Bearer <management_token>`"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["success", "form_id", "require_key", "keys"],
+                  "properties": {
+                    "success": { "const": true },
+                    "form_id": { "type": "string" },
+                    "require_key": { "type": "boolean" },
+                    "keys": { "type": "array", "items": { "$ref": "#/components/schemas/AccessKey" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`rotation_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "403": {
+            "description": "`rotation_token_invalid`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "mintRouteAccessKey",
+        "summary": "Mint an access key",
+        "description": "Mints a key and returns its value once. Intended to run in CI on every build, so a key harvested from a published page goes stale at the next deploy with nobody intervening. The key it replaces stays valid until this one is first accepted on a submission — not on a timer — so a build that mints and then fails to deploy leaves the live form working. An access key is not proof of origin: inlined into a public page it is as public as the endpoint URL beside it. Its value is that rotating it is free, and that a caller posting from its own backend can keep it out of the page entirely.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <rotation_token>` or `Bearer <management_token>`"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Key minted. The value appears here and nowhere else.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["success", "form_id", "key", "key_id", "keys"],
+                  "properties": {
+                    "success": { "const": true },
+                    "form_id": { "type": "string" },
+                    "key": {
+                      "type": "string",
+                      "description": "Send as the `access_key` field. Returned only here."
+                    },
+                    "key_id": { "type": "string" },
+                    "require_key": { "type": "boolean" },
+                    "keys": { "type": "array", "items": { "$ref": "#/components/schemas/AccessKey" } },
+                    "message": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`rotation_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "403": {
+            "description": "`rotation_token_invalid`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
+    "/v1/routes/{formId}/settings": {
+      "post": {
+        "operationId": "updateRouteSettings",
+        "summary": "Update route enforcement settings",
+        "description": "Turns access-key enforcement on or off. Off by default: while off a missing or wrong key still delivers, so a route can mint keys and ship them before it starts refusing anything. Requires at least one live key before it can be turned on, since turning it on with none would stop the form dead.",
+        "parameters": [
+          { "$ref": "#/components/parameters/FormId" },
+          {
+            "name": "Authorization",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "`Bearer <management_token>`"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "require_key": {
+                    "type": "boolean",
+                    "description": "Refuse submissions without a recognised access key."
+                  },
+                  "schema": {
+                    "description": "Attach a declared shape, or `null` to clear one. Requires conForm+ on the destination inbox; a schema already attached keeps being enforced if a plan later lapses.",
+                    "oneOf": [{ "$ref": "#/components/schemas/FormSchema" }, { "type": "null" }]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["success", "form_id", "require_key"],
+                  "properties": {
+                    "success": { "const": true },
+                    "form_id": { "type": "string" },
+                    "require_key": { "type": "boolean" }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_json`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "401": {
+            "description": "`management_token_required`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "403": {
+            "description": "`management_token_invalid`, `access_key_required` when the route has no key yet, or `schema_unavailable` when the inbox has no conForm+ plan.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
+          "404": {
+            "description": "`route_not_found`.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          }
+        }
+      }
+    },
     "/v1/account/insight": {
       "post": {
         "operationId": "accountInsight",
@@ -597,7 +794,7 @@
       "post": {
         "operationId": "submitForm",
         "summary": "Submit a form",
-        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` is reserved for compatibility. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
+        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` carries the route's access key when it has one, and is stripped before delivery; `_dry_run` set to `true`/`1`/`yes`/`on` runs every check and stops before spending anything — no email, no webhook, no quota — and answers with `dry_run: true`, `delivered: false`. A dry run returns the exact error a real submission would for route state, access key and schema, so it is the way to prove a form works without polluting an inbox. The allowance is reported rather than refused: a spent allowance answers `200` with `would_deliver: false`, not a `429`. `quota` and `delivery` are included only when the request carried an accepted `access_key`. Unlike `_test` it is strict about its value: `_dry_run=false` submits for real. A route that has declared a schema refuses submissions that do not match it with `422 submission_invalid` and per-field detail, before spending any quota; a cross-field rule that fires refuses it the same way, naming the rule rather than a field. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
         "parameters": [{ "$ref": "#/components/parameters/FormId" }],
         "requestBody": {
           "required": true,
@@ -615,7 +812,7 @@
         },
         "responses": {
           "200": {
-            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured; `test`/`echo` appear for `_test` submissions. HTML-accepting clients receive a result page instead.",
+            "description": "Submission delivered (the send was accepted by the email provider). `used`/`limit` report the shared inbox allowance when a limit is configured; `test`/`echo` appear for `_test` submissions. On a `_dry_run` submission nothing was delivered: the body carries `dry_run: true`, `delivered: false` and `would_deliver`. A caller whose `access_key` was accepted also receives the `delivery` plan and a `quota` reading taken without consuming it; an anonymous caller does not, since the form ID is public and the counters are the owner's business volume. A dry run never redirects and never renders a thank-you page, so a `_dry_run` field shipped into a live form cannot silently swallow real submissions. HTML-accepting clients receive a result page instead.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/SubmissionAccepted" }
@@ -645,8 +842,14 @@
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
           },
+          "403": {
+            "description": "`access_key_required` or `access_key_invalid`, on a route that enforces one.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
           "413": {
-            "description": "`submission_too_large`.",
+            "description": "`submission_too_large`, `too_many_fields`, or `field_too_large`.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -657,8 +860,14 @@
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
           },
+          "422": {
+            "description": "`submission_invalid` — the route declared a schema and this submission does not match it. `errors` carries one entry per field that failed, or per cross-field rule that fired. No quota was spent.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
+            }
+          },
           "429": {
-            "description": "`monthly_allowance_exhausted` — includes `used`, `limit`, and `resets_at`.",
+            "description": "`monthly_allowance_exhausted` (with `used`, `limit`, `resets_at`) or `daily_allowance_exhausted` (with `used`, `limit`, `day`) — the day ceiling is retryable tomorrow.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -708,6 +917,143 @@
       }
     },
     "schemas": {
+      "FormSchema": {
+        "type": "object",
+        "description": "A form's declared shape. Without one the endpoint is a relay: it cannot know a form's field names, which are required, or what a plausible value looks like, so it forwards whatever arrives. With one it refuses a submission on its merits rather than on its fingerprints. `fields` constrains one field at a time; `rules` constrains combinations of them.",
+        "required": ["fields"],
+        "properties": {
+          "strict": {
+            "type": "boolean",
+            "default": true,
+            "description": "Refuse fields the schema does not declare. conForm's own `_`-prefixed fields are always exempt."
+          },
+          "fields": {
+            "type": "object",
+            "description": "At most 100 fields. Names start with a letter and use letters, digits, \"_\", \".\" or \"-\"; leading underscores are reserved for conForm.",
+            "additionalProperties": { "$ref": "#/components/schemas/FieldSpec" }
+          },
+          "rules": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "Cross-field rules, in declaration order. They run only after every field check has passed, and each one that fires adds a `rule_violated` entry to the `errors` array of a `422 submission_invalid`. An empty array is accepted and stored as no rules at all.",
+            "items": { "$ref": "#/components/schemas/FormRule" }
+          }
+        }
+      },
+      "FieldSpec": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "default": "text",
+            "description": "`integer` is exact to \u00b19007199254740991: a longer run of digits is refused as `invalid_integer`, because past that a decimal string and the number it becomes are different values and no range check or rule could be trusted. Use `text` with a `pattern` for long identifiers. `datetime` values are compared as instants by a rule; `date` and `time` as text, which is correct for the ISO forms an HTML input produces.",
+            "enum": [
+              "text",
+              "email",
+              "tel",
+              "url",
+              "integer",
+              "number",
+              "date",
+              "time",
+              "datetime",
+              "boolean",
+              "choice"
+            ]
+          },
+          "required": {
+            "type": "boolean",
+            "description": "An empty value counts as absent. A browser omits a disabled input entirely, so a required field arriving as an empty string is a sender that built the body from the page source rather than from the form."
+          },
+          "multiple": {
+            "type": "boolean",
+            "description": "Allow a repeated field, as a checkbox group or multi-select sends."
+          },
+          "min": {
+            "type": "number",
+            "description": "Numeric bound. Applies to `integer` and `number` fields only \u2014 declaring it on any other type is `invalid_schema`, because it was silently ignored there. Use `min_length`/`max_length` to bound text."
+          },
+          "max": { "type": "number", "description": "Numeric bound. `integer` and `number` fields only." },
+          "min_length": { "type": "integer" },
+          "max_length": { "type": "integer" },
+          "pattern": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Regular expression, compiled with the `u` flag and tested against values up to 4096 characters."
+          },
+          "options": {
+            "type": "array",
+            "maxItems": 100,
+            "items": { "type": "string" },
+            "description": "Required for a `choice` field; permitted on any type."
+          }
+        }
+      },
+      "FormRule": {
+        "type": "object",
+        "description": "A constraint across fields — an occupancy cap, a date order, a field required only when another is filled in. Conditional requirement is a rule rather than a second construct.",
+        "required": ["when", "reject"],
+        "properties": {
+          "when": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "A true/false expression; the rule fires when it is true. The language is field names, number and string literals, `+ - * /`, `> >= < <= == !=`, `&& || !`, parentheses, and one function, `present(field)` \u2014 no string manipulation, regular expressions, loops, property access, user-defined functions, or `true`/`false` literals, and comparisons do not chain. It is parsed to a tree and interpreted; nothing is ever compiled into code. Everything is checked when the schema is set: syntax, the limits, that every identifier is a declared field, and the type of every operand \u2014 a bad expression is `400 invalid_schema` naming it as `rules[N]`, the same index a violation carries, never a surprise at submission time. A rule that could never fire is refused too: a condition that reads no field, a blank string literal (blank counts as absent), and `present(x)` on a field already declared `required` \u2014 make the field optional if the rule is what requires it. Values take the type their field declares: numeric fields compare as numbers, a `datetime` as an instant (so a re-spelled value cannot change the answer), and `date`, `time`, `choice` and text as text, exactly and case-sensitively (a `time` is padded to `hh:mm:ss` on both sides, since a browser sends either form). Comparing a `date`, `time` or `datetime` against a literal that is not written the same way is refused at declaration rather than answered `false` forever. A field declared `multiple` may only appear inside `present()`. Absence: a missing or blank field counts as 0 in arithmetic and makes any comparison false, `!=` included \u2014 so a bare comparison never fires on a value nobody sent, and `present()` is how absence is stated. Arithmetic is never absent, so `children + 0 == 0` is true when `children` is blank. Depth is measured over the whole expression (a flat chain of `&&` counts), so 20 levels, not 20 parentheses.",
+            "examples": ["adults + children > 6", "present(check_in) && !present(check_out)"]
+          },
+          "reject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The message the submitter is given when this rule fires."
+          }
+        }
+      },
+      "FieldError": {
+        "type": "object",
+        "required": ["field", "code", "message"],
+        "properties": {
+          "field": { "type": "string" },
+          "code": {
+            "type": "string",
+            "description": "One of: required, unknown_field, too_many_values, not_an_option, too_short, too_long, below_minimum, above_maximum, pattern_mismatch, invalid_email, invalid_tel, invalid_url, invalid_integer, invalid_number, invalid_date, invalid_time, invalid_datetime, invalid_boolean."
+          },
+          "message": { "type": "string" }
+        }
+      },
+      "RuleError": {
+        "type": "object",
+        "description": "A cross-field rule that fired. It carries no `field`: a rule spans fields, which is the whole reason it exists.",
+        "required": ["rule", "code", "message"],
+        "properties": {
+          "rule": {
+            "type": "integer",
+            "description": "Index into `schema.rules`, which `GET /v1/routes/{formId}` publishes."
+          },
+          "code": { "type": "string", "const": "rule_violated" },
+          "message": {
+            "type": "string",
+            "description": "The rule's `reject` text, as the form's owner wrote it \u2014 arbitrary text from the route's owner, so escape it before rendering it into a page."
+          }
+        }
+      },
+      "AccessKey": {
+        "type": "object",
+        "required": ["key_id", "state", "created_at"],
+        "properties": {
+          "key_id": {
+            "type": "string",
+            "description": "Public label. Names a key in a listing without revealing it."
+          },
+          "state": { "type": "string", "enum": ["current", "previous"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "first_used_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Set the first time this key was accepted on a submission. Its arrival is what retires the keys it superseded."
+          }
+        }
+      },
       "ErrorCode": {
         "type": "string",
         "description": "Stable machine-readable failure codes currently emitted at runtime. The full table, including planned codes, is in x-conform-error-codes at the document root.",
@@ -718,13 +1064,9 @@
           "invalid_idempotency_key",
           "idempotency_key_conflict",
           "delivery_config_unsupported",
-          "invalid_redirect_url",
           "invalid_webhook_url",
+          "invalid_redirect_url",
           "unknown_framework",
-          "management_token_required",
-          "management_token_invalid",
-          "account_lookup_unauthorized",
-          "account_lookup_unavailable",
           "rate_limited",
           "verified_destination_capacity",
           "route_not_found",
@@ -734,12 +1076,26 @@
           "verification_token_expired",
           "verification_mismatch",
           "verification_unavailable",
+          "management_token_required",
+          "management_token_invalid",
+          "rotation_token_required",
+          "rotation_token_invalid",
+          "account_lookup_unauthorized",
+          "account_lookup_unavailable",
           "submission_empty",
+          "submission_invalid",
+          "invalid_schema",
+          "schema_unavailable",
+          "too_many_fields",
+          "field_too_large",
           "submission_too_large",
           "unsupported_media_type",
           "file_uploads_unsupported",
           "inbox_not_verified",
+          "access_key_required",
+          "access_key_invalid",
           "monthly_allowance_exhausted",
+          "daily_allowance_exhausted",
           "delivery_failed",
           "webhook_delivery_failed",
           "method_not_allowed",
@@ -761,7 +1117,17 @@
           "used": { "type": "integer" },
           "limit": { "type": "integer" },
           "resets_at": { "type": "string", "format": "date-time" },
-          "next_action": { "$ref": "#/components/schemas/NextAction" }
+          "next_action": { "$ref": "#/components/schemas/NextAction" },
+          "errors": {
+            "type": "array",
+            "description": "Detail on `submission_invalid`: one entry per field that failed, or per cross-field rule that fired. Returned to every caller: a form's shape is derivable from the page it is installed on, so withholding detail protects nothing and leaves real integrators debugging blind.",
+            "items": {
+              "oneOf": [
+                { "$ref": "#/components/schemas/FieldError" },
+                { "$ref": "#/components/schemas/RuleError" }
+              ]
+            }
+          }
         },
         "additionalProperties": true
       },
@@ -826,6 +1192,10 @@
               }
             },
             "additionalProperties": true
+          },
+          "schema": {
+            "$ref": "#/components/schemas/FormSchema",
+            "description": "Optional declared shape, including any cross-field `rules`. Submissions that do not match are refused with `422 submission_invalid` and per-field or per-rule detail, before any quota is spent. Requires conForm+ on the destination inbox."
           }
         },
         "additionalProperties": true
@@ -863,6 +1233,18 @@
             "type": "string",
             "description": "Bearer credential for DELETE. Returned at creation and on idempotent replay only — treat as a secret and store it."
           },
+          "rotation_token": {
+            "type": "string",
+            "description": "Bearer credential for minting access keys, and nothing else. Returned at creation and on idempotent replay. Safe in a CI secret, unlike `management_token`, which can delete the route and its inbox binding."
+          },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "The route refuses submissions that do not carry a recognised `access_key`."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/FormSchema",
+            "description": "Present when the form has declared a shape. Published deliberately: it is derivable from the page the form is installed on, and an agent that reads it builds a submission that passes first time."
+          },
           "webhook": {
             "type": "object",
             "description": "Present when webhook delivery is configured: the signing secret, returned at creation and on idempotent replay. Treat as a secret.",
@@ -876,7 +1258,15 @@
             "description": "True when this response is an idempotent replay reflecting the route's current state."
           },
           "message": { "type": "string" },
-          "next_action": { "$ref": "#/components/schemas/NextAction" }
+          "next_action": { "$ref": "#/components/schemas/NextAction" },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "Present on the status response. True when this route refuses submissions that carry no recognised access key."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/FormSchema",
+            "description": "Present on the status response when the route has declared a shape. Published deliberately: an agent that can read the shape builds a submission that passes first time, and the `rule` index in a `rule_violated` error resolves against `schema.rules`."
+          }
         },
         "additionalProperties": false
       },
@@ -930,7 +1320,7 @@
       },
       "InstallArtifact": {
         "type": "object",
-        "required": ["success", "framework", "files", "notes", "test_command"],
+        "required": ["success", "framework", "files", "notes", "license", "dry_run_command", "test_command"],
         "properties": {
           "success": { "const": true },
           "framework": { "type": "string" },
@@ -946,6 +1336,19 @@
             }
           },
           "notes": { "type": "array", "items": { "type": "string" } },
+          "license": {
+            "type": "string",
+            "const": "MIT",
+            "description": "The licence of the generated artifact, stated on the artifact itself so an agent never has to infer it from the repository the engine came out of. The engine is FSL-1.1-ALv2; what you paste into your site is MIT and carries no obligation."
+          },
+          "dry_run_command": {
+            "type": "string",
+            "description": "Proves the install without sending anything: every check runs, no email, no webhook, no quota."
+          },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "The route refuses submissions that do not carry a recognised `access_key`."
+          },
           "test_command": {
             "type": "string",
             "description": "curl command that sends a _test-marked submission."
@@ -997,14 +1400,24 @@
     "verification_unavailable": { "status": 404, "retryable": false },
     "management_token_required": { "status": 401, "retryable": false },
     "management_token_invalid": { "status": 403, "retryable": false },
+    "rotation_token_required": { "status": 401, "retryable": false },
+    "rotation_token_invalid": { "status": 403, "retryable": false },
     "account_lookup_unauthorized": { "status": 401, "retryable": false },
     "account_lookup_unavailable": { "status": 503, "retryable": false },
     "submission_empty": { "status": 400, "retryable": false },
+    "submission_invalid": { "status": 422, "retryable": false },
+    "invalid_schema": { "status": 400, "retryable": false },
+    "schema_unavailable": { "status": 403, "retryable": false },
+    "too_many_fields": { "status": 413, "retryable": false },
+    "field_too_large": { "status": 413, "retryable": false },
     "submission_too_large": { "status": 413, "retryable": false },
     "unsupported_media_type": { "status": 415, "retryable": false },
     "file_uploads_unsupported": { "status": 400, "retryable": false },
     "inbox_not_verified": { "status": 409, "retryable": true },
+    "access_key_required": { "status": 403, "retryable": false },
+    "access_key_invalid": { "status": 403, "retryable": false },
     "monthly_allowance_exhausted": { "status": 429, "retryable": false },
+    "daily_allowance_exhausted": { "status": 429, "retryable": true },
     "delivery_failed": { "status": 503, "retryable": true },
     "webhook_delivery_failed": { "status": 502, "retryable": true },
     "method_not_allowed": { "status": 405, "retryable": false },

@@ -31,6 +31,7 @@ export default defineConfig({
               compatibilityDate: '2026-07-21',
               durableObjects: {
                 QUOTAS: { className: 'InboxQuota', useSQLite: true },
+                ROUTES: { className: 'FormRoute', useSQLite: true },
               },
             },
             wrangler: { configPath: './wrangler.toml' },

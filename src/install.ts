@@ -5,6 +5,7 @@ import { ApiError, json } from './errors';
 import { getStoredRoute } from './routes';
 import {
   FRAMEWORKS,
+  dryRunCommand,
   installFiles,
   installNotes,
   isFramework,
@@ -29,8 +30,9 @@ function respond(
   framework: Framework,
   endpoint: string,
   extra: Record<string, unknown>,
+  withKey = false,
 ): Response {
-  const files = installFiles(framework, endpoint);
+  const files = installFiles(framework, endpoint, withKey);
   if (new URL(request.url).searchParams.get('raw') === '1') {
     return new Response(files[0].content, {
       headers: {
@@ -48,7 +50,8 @@ function respond(
     // infer which licence applies from the repository it came out of. The
     // engine is FSL; what you paste into your site is not.
     license: 'MIT',
-    notes: installNotes(framework),
+    notes: installNotes(framework, withKey),
+    dry_run_command: dryRunCommand(endpoint),
     test_command: testCommand(endpoint),
     ...extra,
   });
@@ -74,9 +77,20 @@ export async function routeInstall(
   if (!record) throw new ApiError('route_not_found', 'Form route not found');
   const origin = new URL(request.url).origin;
   const endpoint = submissionEndpoint(env, origin, formId);
-  return respond(request, framework, endpoint, {
-    form_id: formId,
-    status: record.status === 'active' ? 'active' : 'pending_verification',
-    next_action: nextActionFor(record.status, routeStatusUrl(env, origin, formId)),
-  });
+  // The artifact carries the access_key field only once the route has a key to
+  // put in it. Adding it earlier would ship a form posting a placeholder as a
+  // real value, which is worse than not having the field at all.
+  const withKey = (record.accessKeys ?? []).length > 0;
+  return respond(
+    request,
+    framework,
+    endpoint,
+    {
+      form_id: formId,
+      status: record.status === 'active' ? 'active' : 'pending_verification',
+      requires_access_key: Boolean(record.requireKey),
+      next_action: nextActionFor(record.status, routeStatusUrl(env, origin, formId)),
+    },
+    withKey,
+  );
 }

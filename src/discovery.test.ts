@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import spec from '../openapi.json';
+import { discoveryDocument, llmsText } from './discovery';
 import worker from './index';
+import { RULE_LIMITS } from './rules';
+import { FIELD_TYPES } from './schema';
 import { baseEnv, executionContext } from './test-support';
 
 async function getBody(path: string): Promise<Record<string, any>> {
@@ -36,6 +39,15 @@ describe('discovery document', () => {
     expect(doc.persistence.submission_fields).toBe(false);
   });
 
+  it('publishes what a form may declare, so a schema is written right first time', async () => {
+    const doc = await getBody('/');
+    expect(doc.declared_shape.field_types).toEqual([...FIELD_TYPES]);
+    // Discovered limits are the enforced ones, or an agent writes a schema
+    // that is refused by a number nobody told it about.
+    expect(doc.declared_shape.cross_field_rules.limits).toEqual(RULE_LIMITS);
+    expect(doc.declared_shape.cross_field_rules.functions).toEqual(['present(field)']);
+  });
+
   it('lists only endpoints that exist in the OpenAPI paths', async () => {
     const doc = await getBody('/');
     const specPaths = Object.keys(spec.paths);
@@ -64,5 +76,39 @@ describe('discovery document', () => {
     expect(text).toContain('Idempotency-Key');
     expect(text).toContain('https://api.conform.test');
     expect(text).toContain('one monthly allowance');
+  });
+});
+
+describe('vendor neutrality', () => {
+  it('does not announce a self-hosted deployment as somebody else’s product', () => {
+    const env = baseEnv();
+    delete env.DOCS_URL;
+    delete env.MCP_URL;
+
+    const text = llmsText(env, 'https://forms.example.com');
+
+    expect(text).not.toContain('Centrst');
+    expect(text).toContain('Form-to-email API.');
+  });
+
+  it('names the operator when one is configured', () => {
+    const text = llmsText(
+      { ...baseEnv(), OPERATOR_NAME: 'Centrst' },
+      'https://forms.example.com',
+    );
+
+    expect(text).toContain('Form-to-email API by Centrst.');
+  });
+
+  it('derives every advertised URL from this deployment', () => {
+    const env = baseEnv();
+    delete env.PUBLIC_URL;
+    delete env.DOCS_URL;
+    delete env.MCP_URL;
+
+    const document = discoveryDocument(env, 'https://forms.example.com');
+
+    expect(document.base_url).toBe('https://forms.example.com');
+    expect(JSON.stringify(document)).not.toContain('centrst.com');
   });
 });
