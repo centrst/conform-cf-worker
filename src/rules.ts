@@ -94,9 +94,12 @@ export type Expr =
  * Dates and times are strings: the ISO forms an HTML date input produces sort
  * correctly under a string comparison, which is what makes
  * `check_out <= check_in` work. A `datetime` is the exception -- its spellings
- * do not sort, so comparisons involving one compare instants. See `isInstant`.
+ * do not sort, so comparisons involving one compare instants. See `comparisonKind`.
  */
 type StaticType = 'number' | 'string' | 'boolean';
+
+/** How a comparison reads its operands. See comparisonKind. */
+type ComparisonKind = 'instant' | 'clock' | 'plain';
 
 /** Absent is `null`, for every type including `boolean`; see `readField`. */
 type Value = number | string | boolean | null;
@@ -476,7 +479,7 @@ function typeOf(expr: Expr, fields: Record<string, FieldSpec>, fail: Fail): Stat
       // A datetime is compared as an instant, so the other side has to be
       // readable as one. Text that is not a moment in time would read as
       // absent and the rule would never fire -- a silence this catches now.
-      if (isInstant(expr.left, fields) || isInstant(expr.right, fields)) {
+      if (comparisonKind(expr.left, expr.right, fields) === 'instant') {
         for (const side of [expr.left, expr.right]) {
           if (!readableAsInstant(side, fields)) {
             fail(
@@ -626,8 +629,30 @@ function isPresent(name: string, submission: SubmissionFields): boolean {
  * field compares instants -- both sides parsed, either side unparseable
  * reading as absent, and therefore as false.
  */
-function isInstant(expr: Expr, fields: Record<string, FieldSpec>): boolean {
-  return expr.kind === 'field' && declared(fields, expr.name)?.type === 'datetime';
+function fieldTypeOf(expr: Expr, fields: Record<string, FieldSpec>): FieldType | undefined {
+  return expr.kind === 'field' ? declared(fields, expr.name)?.type : undefined;
+}
+
+/**
+ * How both sides of a comparison are read before they are compared.
+ *
+ * Asked once and answered here, because the validator and the interpreter both
+ * need it and they must not answer it separately. They used to: `typeOf` tested
+ * `isInstant(left) || isInstant(right)` to decide what to demand of the
+ * operands, and `evaluate` tested the same expression again to decide how to
+ * coerce them. Both temporal bugs this file has already had -- a `datetime`
+ * compared as text, and a `time` padded on only one side -- were the two
+ * answers disagreeing.
+ */
+function comparisonKind(
+  left: Expr,
+  right: Expr,
+  fields: Record<string, FieldSpec>,
+): ComparisonKind {
+  const types = [fieldTypeOf(left, fields), fieldTypeOf(right, fields)];
+  if (types.includes('datetime')) return 'instant';
+  if (types.includes('time')) return 'clock';
+  return 'plain';
 }
 
 const DATE_SHAPE = /^\d{4}-\d{2}-\d{2}$/u;
@@ -636,8 +661,9 @@ const INSTANT_SHAPE = /^\d{4}-\d{2}-\d{2}([T ]|$)/u;
 
 /** What the other side of a datetime comparison may be, checked at declaration. */
 function readableAsInstant(expr: Expr, fields: Record<string, FieldSpec>): boolean {
-  if (isInstant(expr, fields)) return true;
-  if (expr.kind === 'field') return declared(fields, expr.name)?.type === 'date';
+  const type = fieldTypeOf(expr, fields);
+  if (type === 'datetime' || type === 'date') return true;
+  if (expr.kind === 'field') return false;
   return (
     expr.kind === 'literal' &&
     typeof expr.value === 'string' &&
@@ -654,10 +680,6 @@ function readableAsInstant(expr: Expr, fields: Record<string, FieldSpec>): boole
  * form, or `opens == "09:00"` would be false for a form that sent seconds and
  * `opens > "09:00"` would be true at exactly nine.
  */
-function isClock(expr: Expr, fields: Record<string, FieldSpec>): boolean {
-  return expr.kind === 'field' && declared(fields, expr.name)?.type === 'time';
-}
-
 function toSeconds(value: Value): Value {
   return typeof value === 'string' && /^\d{2}:\d{2}$/u.test(value) ? `${value}:00` : value;
 }
@@ -721,12 +743,11 @@ function evaluate(expr: Expr, fields: Record<string, FieldSpec>, submission: Sub
     }
 
     case 'compare': {
-      const instants = isInstant(expr.left, fields) || isInstant(expr.right, fields);
-      const clocks = !instants && (isClock(expr.left, fields) || isClock(expr.right, fields));
+      const kind = comparisonKind(expr.left, expr.right, fields);
       const read = (side: Expr): Value => {
         const value = evaluate(side, fields, submission);
-        if (instants) return toInstant(value);
-        return clocks ? toSeconds(value) : value;
+        if (kind === 'instant') return toInstant(value);
+        return kind === 'clock' ? toSeconds(value) : value;
       };
       const left = read(expr.left);
       const right = read(expr.right);
