@@ -1,4 +1,5 @@
 import { ApiError } from './errors';
+import { evaluateRules, parseRules, type FormRule, type RuleError } from './rules';
 import type { SubmissionFields, SubmissionValue } from './types';
 
 /**
@@ -11,11 +12,11 @@ import type { SubmissionFields, SubmissionValue } from './types';
  * its fingerprints, which is the only kind of refusal that stays true as the
  * senders adapt.
  *
- * Deliberately not a rules engine. Everything here is a property of a single
- * field. Constraints that span fields ("checkout must follow checkin",
- * "adults + children within the occupancy cap") are a separate feature with a
- * separate expression language, and folding them in here would turn a schema
- * into a scripting host.
+ * Everything in this file is a property of a single field. Constraints that
+ * span fields ("checkout must follow checkin", "adults + children within the
+ * occupancy cap") are `rules`, which live in their own tiny expression
+ * language in rules.ts -- kept separate so that a field schema stays a
+ * declaration rather than becoming a scripting host.
  */
 
 export const FIELD_TYPES = [
@@ -51,6 +52,8 @@ export interface FormSchema {
   /** Refuse fields the schema does not declare. On unless explicitly disabled. */
   strict: boolean;
   fields: Record<string, FieldSpec>;
+  /** Cross-field rules, in declaration order. Absent when the form declares none. */
+  rules?: FormRule[];
 }
 
 export interface FieldError {
@@ -58,6 +61,14 @@ export interface FieldError {
   code: string;
   message: string;
 }
+
+/**
+ * One `errors` array carries both, and the envelope shape does not change: a
+ * field error names a `field`, a rule violation names the `rule` it broke by
+ * its index in the published schema. A rule has no single field to blame --
+ * that is the whole reason it exists.
+ */
+export type SubmissionError = FieldError | RuleError;
 
 const MAX_SCHEMA_FIELDS = 100;
 const MAX_OPTIONS = 100;
@@ -224,6 +235,14 @@ export function parseFormSchema(value: unknown): FormSchema {
     if (min !== undefined && max !== undefined && min > max) {
       fail(`Field "${name}": min is greater than max`);
     }
+    if ((min !== undefined || max !== undefined) && type !== 'integer' && type !== 'number') {
+      // They were silently ignored on every other type, so a form declaring
+      // {"type":"text","max":500} meaning length was enforcing nothing at all.
+      fail(
+        `Field "${name}": min and max apply to integer and number fields; ` +
+          'use min_length and max_length to bound text',
+      );
+    }
     if (minLength !== undefined && maxLength !== undefined && minLength > maxLength) {
       fail(`Field "${name}": min_length is greater than max_length`);
     }
@@ -288,7 +307,11 @@ export function parseFormSchema(value: unknown): FormSchema {
     };
   }
 
-  return { strict: raw.strict !== false, fields };
+  // Rules are typed against the fields above, so an expression can only ever
+  // mention a field this schema declares.
+  const rules = raw.rules === undefined ? undefined : parseRules(raw.rules, fields);
+
+  return { strict: raw.strict !== false, fields, ...(rules?.length ? { rules } : {}) };
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/u;
@@ -333,7 +356,13 @@ function checkType(value: string, spec: FieldSpec): FieldError['code'] | undefin
         return 'invalid_url';
       }
     case 'integer':
-      return /^[+-]?\d+$/u.test(value) ? undefined : 'invalid_integer';
+      // Digits alone are not enough. "1" followed by 400 zeroes matches the
+      // shape, becomes Infinity as a number, and then slips past min/max and
+      // reads as absent to a cross-field rule -- so a value that cannot be
+      // held exactly is not an integer this form can reason about.
+      return /^[+-]?\d+$/u.test(value) && Number.isSafeInteger(Number(value))
+        ? undefined
+        : 'invalid_integer';
     case 'number':
       return value.trim() !== '' && Number.isFinite(Number(value))
         ? undefined
@@ -376,15 +405,16 @@ function checkValue(name: string, value: string, spec: FieldSpec): FieldError[] 
   if (spec.max_length !== undefined && value.length > spec.max_length) {
     push('too_long', `"${name}" must be at most ${spec.max_length} characters`);
   }
+  // min/max belong to the numeric types, and parseFormSchema refuses them
+  // anywhere else. A value that reaches here has already passed its type
+  // check, so it is a finite number and there is nothing left to skip.
   if (spec.min !== undefined || spec.max !== undefined) {
     const numeric = Number(value);
-    if (Number.isFinite(numeric)) {
-      if (spec.min !== undefined && numeric < spec.min) {
-        push('below_minimum', `"${name}" must be at least ${spec.min}`);
-      }
-      if (spec.max !== undefined && numeric > spec.max) {
-        push('above_maximum', `"${name}" must be at most ${spec.max}`);
-      }
+    if (spec.min !== undefined && numeric < spec.min) {
+      push('below_minimum', `"${name}" must be at least ${spec.min}`);
+    }
+    if (spec.max !== undefined && numeric > spec.max) {
+      push('above_maximum', `"${name}" must be at most ${spec.max}`);
     }
   }
   if (spec.pattern !== undefined) {
@@ -425,11 +455,16 @@ function values(value: SubmissionValue): string[] {
  * omits a disabled input entirely, so a required field arriving as an empty
  * string is a sender that assembled the body from the page source rather than
  * from a form. Treating "" as present would let exactly that through.
+ *
+ * Cross-field rules run only once every field has passed. A rule reading a
+ * field that failed its own type check would be asking a question of a value
+ * the form already refused, and the answer would be noise on top of an error
+ * the submitter must fix first anyway.
  */
 export function validateSubmission(
   schema: FormSchema,
   fields: SubmissionFields,
-): FieldError[] {
+): SubmissionError[] {
   const errors: FieldError[] = [];
 
   for (const [name, spec] of Object.entries(schema.fields)) {
@@ -483,5 +518,7 @@ export function validateSubmission(
     }
   }
 
-  return errors;
+  if (errors.length > 0 || !schema.rules) return errors;
+
+  return evaluateRules(schema.rules, schema.fields, fields);
 }

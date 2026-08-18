@@ -208,9 +208,10 @@ async function checkSubmission(
   // Before the reservation, so a submission refused on its shape costs the
   // owner nothing. This is the only check that can reject on merits rather
   // than on fingerprints -- and it exists only because the form said what it
-  // is. Errors are per-field and go to everyone: the schema is derivable from
-  // the page an attacker already scraped, so withholding detail protects
-  // nothing and leaves real integrators debugging blind.
+  // is. Errors name a field, or the cross-field rule that fired, and go to
+  // everyone: the schema is derivable from the page an attacker already
+  // scraped, so withholding detail protects nothing and leaves real
+  // integrators debugging blind.
   if (route.schema) {
     const errors = validateSubmission(route.schema, parsed.fields);
     if (errors.length > 0) {

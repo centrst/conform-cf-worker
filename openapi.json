@@ -794,7 +794,7 @@
       "post": {
         "operationId": "submitForm",
         "summary": "Submit a form",
-        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` carries the route's access key when it has one, and is stripped before delivery; `_dry_run` set to `true`/`1`/`yes`/`on` runs every check and stops before spending anything — no email, no webhook, no quota — and answers with `dry_run: true`, `delivered: false`. A dry run returns the exact error a real submission would for route state, access key and schema, so it is the way to prove a form works without polluting an inbox. The allowance is reported rather than refused: a spent allowance answers `200` with `would_deliver: false`, not a `429`. `quota` and `delivery` are included only when the request carried an accepted `access_key`. Unlike `_test` it is strict about its value: `_dry_run=false` submits for real. A route that has declared a schema refuses submissions that do not match it with `422 submission_invalid` and per-field detail, before spending any quota. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
+        "description": "Accepts `application/x-www-form-urlencoded`, `multipart/form-data` (text fields only), or `application/json` (flat object). Reserved field names: `_subject`/`subject` sets the email subject; `_format`/`format` set to `json` attaches `submission.json`; a valid `email` field becomes the reply-to address; `_gotcha` and `botcheck` are spam traps — legitimate clients must never populate them (generated forms include an empty hidden `_gotcha`); `_redirect`/`redirect` set to an absolute `https://` URL returns `303 See Other` to that URL after successful delivery (invalid values are rejected with `invalid_redirect_url`); `_test` marks a test submission: it is delivered for real (subject prefixed `[Test]`, consumes one quota unit) and the response carries `test: true` plus an `echo` of any non-boolean `_test` value — a test response WITHOUT `test: true` means the submission was spam-filtered, so stop populating hidden trap fields; `access_key` carries the route's access key when it has one, and is stripped before delivery; `_dry_run` set to `true`/`1`/`yes`/`on` runs every check and stops before spending anything — no email, no webhook, no quota — and answers with `dry_run: true`, `delivered: false`. A dry run returns the exact error a real submission would for route state, access key and schema, so it is the way to prove a form works without polluting an inbox. The allowance is reported rather than refused: a spent allowance answers `200` with `would_deliver: false`, not a `429`. `quota` and `delivery` are included only when the request carried an accepted `access_key`. Unlike `_test` it is strict about its value: `_dry_run=false` submits for real. A route that has declared a schema refuses submissions that do not match it with `422 submission_invalid` and per-field detail, before spending any quota; a cross-field rule that fires refuses it the same way, naming the rule rather than a field. Requests with `Accept: text/html` (and no `application/json`) receive a minimal HTML result page instead of JSON, so plain HTML forms land on a readable page. Repeated keys collapse into arrays. Retrying after a network timeout may deliver a duplicate email — conForm keeps no submission history, so submissions cannot be deduplicated server-side by design.",
         "parameters": [{ "$ref": "#/components/parameters/FormId" }],
         "requestBody": {
           "required": true,
@@ -861,7 +861,7 @@
             }
           },
           "422": {
-            "description": "`submission_invalid` — the route declared a schema and this submission does not match it. `errors` carries per-field detail. No quota was spent.",
+            "description": "`submission_invalid` — the route declared a schema and this submission does not match it. `errors` carries one entry per field that failed, or per cross-field rule that fired. No quota was spent.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -919,7 +919,7 @@
     "schemas": {
       "FormSchema": {
         "type": "object",
-        "description": "A form's declared shape. Without one the endpoint is a relay: it cannot know a form's field names, which are required, or what a plausible value looks like, so it forwards whatever arrives. With one it refuses a submission on its merits rather than on its fingerprints. Every constraint here is a property of a single field; constraints that span fields are a separate feature.",
+        "description": "A form's declared shape. Without one the endpoint is a relay: it cannot know a form's field names, which are required, or what a plausible value looks like, so it forwards whatever arrives. With one it refuses a submission on its merits rather than on its fingerprints. `fields` constrains one field at a time; `rules` constrains combinations of them.",
         "required": ["fields"],
         "properties": {
           "strict": {
@@ -931,6 +931,12 @@
             "type": "object",
             "description": "At most 100 fields. Names start with a letter and use letters, digits, \"_\", \".\" or \"-\"; leading underscores are reserved for conForm.",
             "additionalProperties": { "$ref": "#/components/schemas/FieldSpec" }
+          },
+          "rules": {
+            "type": "array",
+            "maxItems": 20,
+            "description": "Cross-field rules, in declaration order. They run only after every field check has passed, and each one that fires adds a `rule_violated` entry to the `errors` array of a `422 submission_invalid`. An empty array is accepted and stored as no rules at all.",
+            "items": { "$ref": "#/components/schemas/FormRule" }
           }
         }
       },
@@ -940,6 +946,7 @@
           "type": {
             "type": "string",
             "default": "text",
+            "description": "`integer` is exact to \u00b19007199254740991: a longer run of digits is refused as `invalid_integer`, because past that a decimal string and the number it becomes are different values and no range check or rule could be trusted. Use `text` with a `pattern` for long identifiers. `datetime` values are compared as instants by a rule; `date` and `time` as text, which is correct for the ISO forms an HTML input produces.",
             "enum": [
               "text",
               "email",
@@ -962,8 +969,11 @@
             "type": "boolean",
             "description": "Allow a repeated field, as a checkbox group or multi-select sends."
           },
-          "min": { "type": "number" },
-          "max": { "type": "number" },
+          "min": {
+            "type": "number",
+            "description": "Numeric bound. Applies to `integer` and `number` fields only \u2014 declaring it on any other type is `invalid_schema`, because it was silently ignored there. Use `min_length`/`max_length` to bound text."
+          },
+          "max": { "type": "number", "description": "Numeric bound. `integer` and `number` fields only." },
           "min_length": { "type": "integer" },
           "max_length": { "type": "integer" },
           "pattern": {
@@ -979,6 +989,26 @@
           }
         }
       },
+      "FormRule": {
+        "type": "object",
+        "description": "A constraint across fields — an occupancy cap, a date order, a field required only when another is filled in. Conditional requirement is a rule rather than a second construct.",
+        "required": ["when", "reject"],
+        "properties": {
+          "when": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "A true/false expression; the rule fires when it is true. The language is field names, number and string literals, `+ - * /`, `> >= < <= == !=`, `&& || !`, parentheses, and one function, `present(field)` \u2014 no string manipulation, regular expressions, loops, property access, user-defined functions, or `true`/`false` literals, and comparisons do not chain. It is parsed to a tree and interpreted; nothing is ever compiled into code. Everything is checked when the schema is set: syntax, the limits, that every identifier is a declared field, and the type of every operand \u2014 a bad expression is `400 invalid_schema` naming it as `rules[N]`, the same index a violation carries, never a surprise at submission time. A rule that could never fire is refused too: a condition that reads no field, a blank string literal (blank counts as absent), and `present(x)` on a field already declared `required` \u2014 make the field optional if the rule is what requires it. Values take the type their field declares: numeric fields compare as numbers, a `datetime` as an instant (so a re-spelled value cannot change the answer), and `date`, `time`, `choice` and text as text, exactly and case-sensitively (a `time` is padded to `hh:mm:ss` on both sides, since a browser sends either form). Comparing a `date`, `time` or `datetime` against a literal that is not written the same way is refused at declaration rather than answered `false` forever. A field declared `multiple` may only appear inside `present()`. Absence: a missing or blank field counts as 0 in arithmetic and makes any comparison false, `!=` included \u2014 so a bare comparison never fires on a value nobody sent, and `present()` is how absence is stated. Arithmetic is never absent, so `children + 0 == 0` is true when `children` is blank. Depth is measured over the whole expression (a flat chain of `&&` counts), so 20 levels, not 20 parentheses.",
+            "examples": ["adults + children > 6", "present(check_in) && !present(check_out)"]
+          },
+          "reject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The message the submitter is given when this rule fires."
+          }
+        }
+      },
       "FieldError": {
         "type": "object",
         "required": ["field", "code", "message"],
@@ -989,6 +1019,22 @@
             "description": "One of: required, unknown_field, too_many_values, not_an_option, too_short, too_long, below_minimum, above_maximum, pattern_mismatch, invalid_email, invalid_tel, invalid_url, invalid_integer, invalid_number, invalid_date, invalid_time, invalid_datetime, invalid_boolean."
           },
           "message": { "type": "string" }
+        }
+      },
+      "RuleError": {
+        "type": "object",
+        "description": "A cross-field rule that fired. It carries no `field`: a rule spans fields, which is the whole reason it exists.",
+        "required": ["rule", "code", "message"],
+        "properties": {
+          "rule": {
+            "type": "integer",
+            "description": "Index into `schema.rules`, which `GET /v1/routes/{formId}` publishes."
+          },
+          "code": { "type": "string", "const": "rule_violated" },
+          "message": {
+            "type": "string",
+            "description": "The rule's `reject` text, as the form's owner wrote it \u2014 arbitrary text from the route's owner, so escape it before rendering it into a page."
+          }
         }
       },
       "AccessKey": {
@@ -1074,8 +1120,13 @@
           "next_action": { "$ref": "#/components/schemas/NextAction" },
           "errors": {
             "type": "array",
-            "description": "Per-field detail on `submission_invalid`. Returned to every caller: a form's shape is derivable from the page it is installed on, so withholding detail protects nothing and leaves real integrators debugging blind.",
-            "items": { "$ref": "#/components/schemas/FieldError" }
+            "description": "Detail on `submission_invalid`: one entry per field that failed, or per cross-field rule that fired. Returned to every caller: a form's shape is derivable from the page it is installed on, so withholding detail protects nothing and leaves real integrators debugging blind.",
+            "items": {
+              "oneOf": [
+                { "$ref": "#/components/schemas/FieldError" },
+                { "$ref": "#/components/schemas/RuleError" }
+              ]
+            }
           }
         },
         "additionalProperties": true
@@ -1144,7 +1195,7 @@
           },
           "schema": {
             "$ref": "#/components/schemas/FormSchema",
-            "description": "Optional declared shape. Submissions that do not match are refused with `422 submission_invalid` and per-field detail, before any quota is spent. Requires conForm+ on the destination inbox."
+            "description": "Optional declared shape, including any cross-field `rules`. Submissions that do not match are refused with `422 submission_invalid` and per-field or per-rule detail, before any quota is spent. Requires conForm+ on the destination inbox."
           }
         },
         "additionalProperties": true
@@ -1207,7 +1258,15 @@
             "description": "True when this response is an idempotent replay reflecting the route's current state."
           },
           "message": { "type": "string" },
-          "next_action": { "$ref": "#/components/schemas/NextAction" }
+          "next_action": { "$ref": "#/components/schemas/NextAction" },
+          "requires_access_key": {
+            "type": "boolean",
+            "description": "Present on the status response. True when this route refuses submissions that carry no recognised access key."
+          },
+          "schema": {
+            "$ref": "#/components/schemas/FormSchema",
+            "description": "Present on the status response when the route has declared a shape. Published deliberately: an agent that can read the shape builds a submission that passes first time, and the `rule` index in a `rule_violated` error resolves against `schema.rules`."
+          }
         },
         "additionalProperties": false
       },

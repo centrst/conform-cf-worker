@@ -3,6 +3,7 @@ import spec from '../openapi.json';
 import worker from './index';
 import { sealToken } from './crypto';
 import { ERROR_TABLE, type ErrorSpec } from './errors';
+import { RULE_LIMITS } from './rules';
 import {
   TEST_FORM_ID,
   baseEnv,
@@ -125,6 +126,14 @@ describe('error taxonomy sync', () => {
       );
       expect(undeclared, `${schema} via ${path}`).toEqual([]);
     }
+  });
+
+  it('documents the rule limits the runtime actually enforces', () => {
+    const rules = spec.components.schemas.FormSchema.properties.rules;
+    const rule = spec.components.schemas.FormRule.properties;
+    expect(rules.maxItems).toBe(RULE_LIMITS.rules_per_form);
+    expect(rule.when.maxLength).toBe(RULE_LIMITS.expression_characters);
+    expect(rule.reject.maxLength).toBe(RULE_LIMITS.reject_characters);
   });
 
   it('documents exactly the dispatched paths', () => {

@@ -9,6 +9,8 @@ import {
 } from './config';
 import { POLL_INTERVAL_SECONDS } from './contract';
 import { publicUrl } from './email';
+import { RULE_LIMITS } from './rules';
+import { FIELD_TYPES } from './schema';
 import type { Env } from './types';
 
 /**
@@ -87,6 +89,17 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
       poll_interval_seconds: POLL_INTERVAL_SECONDS,
     },
     test_submissions: { field: '_test', value: 'true' },
+    // What a form may declare about itself, so an agent can write a schema
+    // that will be accepted rather than discovering the limits by rejection.
+    declared_shape: {
+      field_types: [...FIELD_TYPES],
+      cross_field_rules: {
+        example: { when: 'adults + children > 6', reject: 'Permitted for 6 guests.' },
+        operators: ['+', '-', '*', '/', '>', '>=', '<', '<=', '==', '!=', '&&', '||', '!'],
+        functions: ['present(field)'],
+        limits: RULE_LIMITS,
+      },
+    },
     limits: {
       monthly_submissions_per_inbox: monthlyLimit(env),
       daily_submissions_per_inbox: dailyLimit(env),
@@ -159,6 +172,25 @@ Key facts for agents
   min_length, max_length, pattern, options, multiple. A submission that does not match is refused
   with 422 submission_invalid and a per-field "errors" array, before any quota is spent.
   GET /v1/routes/{form_id} publishes the schema — read it and build a submission that passes first time.
+- Cross-field rules${env.PLAN_ENFORCEMENT === 'true' ? ' (conForm+)' : ''}: "rules": [{"when":"adults + children > 6","reject":"Permitted for 6 guests."}].
+  A rule fires when "when" is true and refuses the submission with that message. The expression language is
+  field names, numbers, strings, + - * /, > >= < <= == !=, && || !, parentheses, and one function present(field).
+  No string functions, no regex, no loops, no property access, no true/false literals, and comparisons do not chain.
+  Every identifier must be a declared field and every operand must be the right type, checked when the schema is
+  set — a bad rule is 400 invalid_schema naming it as rules[N], never a surprise at submission time. Limits:
+  ${RULE_LIMITS.rules_per_form} rules, ${RULE_LIMITS.expression_characters} characters per expression,
+  ${RULE_LIMITS.reject_characters} per reject message, expression depth ${RULE_LIMITS.expression_depth} —
+  depth counts the whole expression, so a flat chain of 20 && or + is over it even with no parentheses.
+  Conditional requirement is a rule, not a separate feature: "present(check_in) && !present(check_out)" — and the
+  field must NOT be declared required, or its own error fires first and the rule never runs. A field declared
+  multiple can only be used inside present(). Comparisons are exact and case-sensitive; a datetime compares as an
+  instant (against a datetime, a date, or a literal date only), a date/time as text. min/max are for integer and
+  number fields only — use min_length/max_length for text — and an integer is exact to ±9007199254740991.
+  Absence: a missing or blank field is 0 in arithmetic, and any comparison with an absent operand is false, "!="
+  included — so "children > 0" and "children == 0" are both false when children is blank. Say absence with
+  present(), or with ! for a checkbox ("!terms" is true when the box was not ticked). Arithmetic is never absent,
+  so "children + 0 == 0" IS true for a blank children. Rules run only after every field check passes.
+  A violation appears in the same "errors" array as {"rule":<index into schema.rules>,"code":"rule_violated","message":<your reject text>}.
 - Optional access keys: POST /v1/routes/{form_id}/keys with "Authorization: Bearer <rotation_token>"
   mints a key, returned once, sent as the access_key field. Run it in CI on every build so a key
   scraped from the published page goes stale at the next deploy. The key it replaces stays valid

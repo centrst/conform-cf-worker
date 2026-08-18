@@ -475,8 +475,8 @@ table, or the runtime drift apart.
 
 Discovery: `GET /` (also `/health` and `/.well-known/conform.json`) returns a
 machine-readable descriptor of this deployment — endpoints, verification
-model, limits, and storage posture. `GET /llms.txt` serves the same contract
-as compact text for language models.
+model, the shape a form may declare, limits, and storage posture.
+`GET /llms.txt` serves the same contract as compact text for language models.
 
 ## MCP server
 
@@ -792,7 +792,13 @@ plausible value looks like. Hand it a schema and it becomes a validator.
       "email":     { "type": "email",   "required": true },
       "phone":     { "type": "tel" },
       "note":      { "type": "text",    "max_length": 2000 }
-    }
+    },
+    "rules": [
+      { "when": "adults + children > 6",
+        "reject": "This property is permitted for 6 guests." },
+      { "when": "check_out <= check_in",
+        "reject": "Check-out must be after check-in." }
+    ]
   }
 }
 ```
@@ -800,6 +806,15 @@ plausible value looks like. Hand it a schema and it becomes a validator.
 Types: `text email tel url integer number date time datetime boolean choice`.
 Per-field constraints: `required`, `multiple`, `min`, `max`, `min_length`,
 `max_length`, `pattern`, `options`.
+
+`min` and `max` bound a number, so they belong to `integer` and `number` and are
+refused anywhere else — they were being silently ignored there, which meant a
+form declaring `{"type": "text", "max": 500}` and meaning length was enforcing
+nothing at all. Use `min_length` and `max_length` for text. An `integer` is
+exact to ±9007199254740991; a longer run of digits is refused, because past that
+the text and the number it becomes are different values and neither a range
+check nor a rule could be trusted with it. Long identifiers are `text` with a
+`pattern`.
 
 Pass `schema` at creation, or attach one later with the management token:
 
@@ -834,7 +849,7 @@ hitting a wall they cannot.
 
 ### What a rejection looks like
 
-`422 submission_invalid`, with per-field detail, **before any quota is spent**:
+`422 submission_invalid`, with one entry per field that failed, **before any quota is spent**:
 
 ```json
 {
@@ -869,16 +884,156 @@ would let exactly that through.
 every input they can scrape plus one of their own. conForm's `_`-prefixed
 fields are always exempt.
 
+## Cross-field rules — conForm+
+
+A field schema refuses the spam — empty required dates, a field the form does
+not have — and still accepts a real guest booking eleven people into a property
+permitted for six. Six adults is within `adults`' maximum and five children is
+within `children`'s; only the *sum* is wrong, and no per-field constraint can
+see a sum. That is what `rules` are for, and it is the refusal that carries
+legal weight rather than merely tidying an inbox.
+
+```json
+"rules": [
+  { "when": "adults + children > 6", "reject": "This property is permitted for 6 guests." },
+  { "when": "check_out <= check_in", "reject": "Check-out must be after check-in." }
+]
+```
+
+A rule fires when `when` is true, and the submission is refused with `reject` as
+the message.
+
+**Conditional requirement is a rule, not a second construct** — but the field it
+requires must not also be declared `required`, or the field's own error fires
+first and the rule never runs:
+
+```json
+"fields": { "company": { "type": "text" }, "vat_number": { "type": "text" } },
+"rules": [
+  { "when": "present(company) && !present(vat_number)",
+    "reject": "A company booking needs a VAT number." }
+]
+```
+
+Writing `present()` against a field that is already `required` is refused when
+you set the schema, because it can only ever be true.
+
+### The expression language
+
+Field names, number and string literals, `+ - * /`, `> >= < <= == !=`,
+`&& || !`, parentheses, and exactly one function: `present(field)`. No string
+manipulation, no regular expressions, no loops, no property access, no
+user-defined functions, and no `true`/`false` literals — write `subscribe` or
+`!subscribe`. Comparisons do not chain: `a > b && b > c`, never `a > b > c`.
+A string literal runs to its next matching quote and has no escapes, so a
+literal containing one kind of quote is written with the other. A field declared
+`multiple` may only appear inside `present()`: it has no single value to compare.
+
+There is a tokenizer, a recursive-descent parser and a plain interpreter over
+the resulting tree (`src/rules.ts`). There is no `eval` and no `new Function`
+anywhere: this is a public endpoint, and compiling caller-supplied text into
+code would be a remote execution hole no amount of prior validation makes safe.
+
+**Everything that can be wrong is wrong when you set the schema**, with
+`400 invalid_schema` naming the rule as `rules[0]` — the same index a violation
+carries — and the problem. Syntax, the limits, an identifier that is not a
+declared field, and the type of every operand are all checked then, so
+`note + 1 > 2` and a bare `note` as a condition are declaration errors rather
+than a rule that silently never matches in production. So is a rule that could
+never fire: one that reads no field at all, one comparing against `""` (blank
+counts as absent), and `present()` on a field already `required`.
+
+Limits: 20 rules per form, 500 characters per expression, 200 per message, and
+20 levels of depth. Depth is measured over the whole expression, so a flat chain
+of twenty `&&`s is over the limit with no parentheses in sight — in practice
+depth binds long before the character ceiling does.
+
+### What a value means
+
+| | |
+|---|---|
+| `integer`, `number` | a number — converted once, from the declared type, never guessed |
+| `datetime` | an instant, parsed |
+| `date`, `time`, `choice`, text | text, compared exactly and case-sensitively (a `time` is padded to `hh:mm:ss` on both sides, since a browser sends either form) |
+| `boolean` | true/false — and an unticked box was never sent, so it is absent |
+
+Dates and times are text because the ISO forms an HTML date input produces sort
+correctly as text — which is what makes `check_out <= check_in` work. A
+`datetime` does not: `2026-06-10T10:00`, `2026-06-10T05:00:00-05:00` and
+`Jun 10 2026` can all name the same moment, and the *submitter* picks the
+spelling. Comparing those as text would hand the sender the choice of whether a
+rule fires, so a comparison involving a `datetime` compares instants — against
+another `datetime`, a `date`, or a literal date, and nothing else, since
+anything that cannot be read as a moment would make the rule permanently
+silent. The same check covers `date` and `time`: comparing one against text no
+date or clock could equal is refused when you set the schema, not answered
+"no" forever afterwards.
+
+String comparison is exact: `email == "spammer@example.com"` is not matched by
+`Spammer@Example.com`. A rule is a shape check, not a blocklist.
+
+Because rules run *after* every field check has passed, a value that reaches a
+rule is already known good for its declared type. The only thing left to decide
+is what a field nobody sent means, and there are two answers:
+
+- **In arithmetic, an absent field is 0.** A sum is over what was sent, and a
+  guest who leaves `children` blank brought no children — so
+  `adults + children > 6` is the occupancy whether the optional field arrived
+  or not.
+- **A comparison with an absent operand is false.** All six operators, `!=`
+  included. A comparison against something that was never sent has no answer,
+  and a rule must never fire on the strength of a value it does not have —
+  otherwise `check_out <= check_in` would reject every submission that had not
+  filled in a checkout date yet.
+
+So `children > 0` is false when `children` is blank, and so is `children == 0`.
+Absence is stated out loud with `present()`, which is why it is the one function
+in the language — or with `!` for a checkbox, since `!terms` is a question about
+absence asked on purpose. Blank counts as absent throughout, for the same reason
+`required` treats it that way.
+
+The one seam, stated rather than hidden: **arithmetic is never absent**, so
+`children + 0 == 0` *is* true when `children` is blank. That is the price of
+`adults + children > 6` working when the optional field is left empty, and it is
+the right trade. A division that does not produce a finite number is absent, so
+`total / nights > 100` cannot fire by way of infinity when `nights` is 0.
+
+### What a rule violation looks like
+
+The same `422 submission_invalid` envelope and the same `errors` array as a
+field error. A rule has no single field to blame — that is the whole reason it
+exists — so it names the rule instead, by its index in the `rules` array that
+`GET /v1/routes/{form_id}` publishes:
+
+```json
+{
+  "success": false,
+  "error": "submission_invalid",
+  "message": "This submission does not match the form.",
+  "retryable": false,
+  "errors": [
+    { "rule": 0, "code": "rule_violated", "message": "This property is permitted for 6 guests." }
+  ]
+}
+```
+
+Every rule that fired is reported, the way every bad field is. Rules run only
+once field validation passes: a rule reading a field that failed its own type
+check would be asking a question of a value the form already refused, and the
+answer would be noise on top of an error that has to be fixed first anyway.
+
+A form posted from plain HTML gets the same detail as a result page rather than
+JSON, so the message you wrote reaches the visitor who tripped it. `message` is
+your own text handed back to an anonymous submitter — escape it if you render it
+into a page of your own.
+
 ### What it does not do
 
-Every constraint is a property of one field. "Checkout must follow checkin" and
-"adults + children within the occupancy cap" span fields, and are a separate
-feature with a separate expression language. Folding them in here would turn a
-schema into a scripting host.
-
-So a schema refuses the spam — empty required dates, a field the form does not
-have — and still accepts a real guest booking eleven people into a property
-permitted for six. That second one is what cross-field rules are for.
+The language stays this size. String manipulation, regular expressions outside
+`pattern`, aggregates over repeated fields, date arithmetic, and anything with a
+loop in it are all absent on purpose: each one is a request to run somebody
+else's program on a public endpoint, and the answer to that is a declaration,
+not an interpreter with more instructions.
 
 ## Quota identity
 
