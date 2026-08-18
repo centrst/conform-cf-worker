@@ -558,3 +558,117 @@ describe('submission rate limiting', () => {
     expect((await submit(env)).status).toBe(200);
   });
 });
+
+describe('throttle reporting is sampled, not per-request', () => {
+  function limiters(reportAllowed: boolean[]) {
+    let call = 0;
+    const reportKeys: string[] = [];
+    return {
+      reportKeys,
+      submission: {
+        limit: async () => ({ success: false }),
+      },
+      report: {
+        limit: async ({ key }: { key: string }) => {
+          reportKeys.push(key);
+          const success = reportAllowed[call] ?? false;
+          call += 1;
+          return { success };
+        },
+      },
+    };
+  }
+
+  async function burst(env: ReturnType<typeof baseEnv>, times: number) {
+    for (let i = 0; i < times; i += 1) {
+      const { ctx, promises } = executionContext();
+      await worker.fetch(
+        new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: 'x' }),
+        }),
+        env,
+        ctx,
+      );
+      await Promise.all(promises);
+    }
+  }
+
+  it('counts once per window however hard the burst pushes', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const requests: string[] = [];
+    const env = baseEnv({ routes, requests });
+    const { submission, report } = limiters([true, false, false, false, false]);
+    env.SUBMISSION_RATE_LIMITER = submission as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    env.THROTTLE_REPORT_LIMITER = report as unknown as typeof env.THROTTLE_REPORT_LIMITER;
+    await installRoute(env, routes);
+
+    await burst(env, 5);
+
+    // Five refused requests, one counter write. Recording an attack must never
+    // scale with the attack.
+    const counted = requests.filter((url) => url.endsWith('/throttled'));
+    expect(counted).toHaveLength(1);
+  });
+
+  it('keys the sampler by form, so one attacked form cannot mask another', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    const { submission, report, reportKeys } = limiters([true]);
+    env.SUBMISSION_RATE_LIMITER = submission as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    env.THROTTLE_REPORT_LIMITER = report as unknown as typeof env.THROTTLE_REPORT_LIMITER;
+    await installRoute(env, routes);
+
+    await burst(env, 1);
+
+    expect(reportKeys[0]).toBe(`report:${TEST_FORM_ID}`);
+  });
+
+  it('still refuses the request when reporting is not configured', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const requests: string[] = [];
+    const env = baseEnv({ routes, requests });
+    const { submission } = limiters([]);
+    env.SUBMISSION_RATE_LIMITER = submission as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    delete env.THROTTLE_REPORT_LIMITER;
+    await installRoute(env, routes);
+
+    const { ctx } = executionContext();
+    const response = await worker.fetch(
+      new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'x' }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(response.status).toBe(429);
+    expect(requests.some((url) => url.endsWith('/throttled'))).toBe(false);
+  });
+
+  it('does not count a throttle against a form that does not exist', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const requests: string[] = [];
+    const env = baseEnv({ routes, requests });
+    const { submission, report } = limiters([true]);
+    env.SUBMISSION_RATE_LIMITER = submission as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    env.THROTTLE_REPORT_LIMITER = report as unknown as typeof env.THROTTLE_REPORT_LIMITER;
+
+    const { ctx, promises } = executionContext();
+    await worker.fetch(
+      new Request('https://api.conform.test/f/cfm_QQQQQQQQQQQQQQQQ', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'x' }),
+      }),
+      env,
+      ctx,
+    );
+    await Promise.all(promises);
+
+    expect(requests.some((url) => url.endsWith('/throttled'))).toBe(false);
+  });
+});

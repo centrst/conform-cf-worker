@@ -37,7 +37,7 @@ import {
   json,
 } from './errors';
 import { isPlaceholderFormId } from './placeholders';
-import { InboxQuota, reserveQuota, rollbackQuota } from './quota';
+import { InboxQuota, countThrottled, reserveQuota, rollbackQuota } from './quota';
 import {
   activateStoredRoute,
   createStoredRoute,
@@ -772,6 +772,24 @@ async function submit(
       env.SUBMISSION_RATE_LIMITER.limit({ key: `client:${clientId}` }),
     ]);
     if (!formLimit.success || !clientLimit.success) {
+      // Record that this inbox is being throttled, but at most once per form
+      // per minute. An attack is unbounded, so counting every refused request
+      // would turn the throttle into the storage amplification it exists to
+      // prevent -- and the route lookup needed to find the inbox is itself the
+      // work being avoided. The reporting limiter buys that lookup once a
+      // minute, which is enough for the owner to see it happening.
+      if (env.THROTTLE_REPORT_LIMITER) {
+        const report = await env.THROTTLE_REPORT_LIMITER.limit({ key: `report:${formId}` });
+        if (report.success) {
+          ctx.waitUntil(
+            (async () => {
+              const throttledRoute = await getStoredRoute(env, formId);
+              if (!throttledRoute) return;
+              await countThrottled(env, throttledRoute.quotaKey ?? throttledRoute.ownerId);
+            })().catch(() => undefined),
+          );
+        }
+      }
       throw new ApiError('rate_limited', 'Too many submissions. Try again in a minute.', {
         retry_after_seconds: 60,
       });

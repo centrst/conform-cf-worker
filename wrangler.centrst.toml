@@ -93,3 +93,13 @@ namespace_id = "17002"
 # caps a single source across every form it has found.
 limit = 20
 period = 60
+
+[[ratelimits]]
+name = "THROTTLE_REPORT_LIMITER"
+namespace_id = "17003"
+
+[ratelimits.simple]
+# Not a throttle: a sampler. One counter write per form per minute however hard
+# an attack pushes, so recording an attack never becomes part of it.
+limit = 1
+period = 60
