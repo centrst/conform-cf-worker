@@ -440,3 +440,121 @@ describe('conform worker', () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe('submission rate limiting', () => {
+  function limiter(results: boolean[]) {
+    const keys: string[] = [];
+    let call = 0;
+    return {
+      keys,
+      binding: {
+        limit: async ({ key }: { key: string }) => {
+          keys.push(key);
+          const success = results[call] ?? true;
+          call += 1;
+          return { success };
+        },
+      },
+    };
+  }
+
+  async function submit(env: ReturnType<typeof baseEnv>) {
+    const { ctx } = executionContext();
+    return worker.fetch(
+      new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '203.0.113.7' },
+        body: JSON.stringify({ message: 'hello' }),
+      }),
+      env,
+      ctx,
+    );
+  }
+
+  it('limits by form and by client, never by anything identifying', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    const { keys, binding } = limiter([true, true]);
+    env.SUBMISSION_RATE_LIMITER = binding as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    await submit(env);
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(`form:${TEST_FORM_ID}`);
+    // The client key is an HMAC, never the raw address.
+    expect(keys[1]).toMatch(/^client:/u);
+    expect(keys[1]).not.toContain('203.0.113.7');
+  });
+
+  it('refuses a burst with a retryable rate_limited', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    const { binding } = limiter([false, true]);
+    env.SUBMISSION_RATE_LIMITER = binding as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    const response = await submit(env);
+    const body = (await response.json()) as Record<string, any>;
+
+    expect(response.status).toBe(429);
+    expect(body.error).toBe('rate_limited');
+    expect(body.retryable).toBe(true);
+    expect(body.retry_after_seconds).toBe(60);
+  });
+
+  it('refuses when the client is over even if the form is not', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    const { binding } = limiter([true, false]);
+    env.SUBMISSION_RATE_LIMITER = binding as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    expect((await submit(env)).status).toBe(429);
+  });
+
+  it('does not consume the allowance when a submission is refused', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const requests: string[] = [];
+    const env = baseEnv({ routes, requests });
+    const { binding } = limiter([false, true]);
+    env.SUBMISSION_RATE_LIMITER = binding as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    await submit(env);
+
+    // A throttled request must never reach the quota object: the whole point is
+    // that the rate limit absorbs an attack instead of the allowance doing it.
+    expect(requests.some((url) => url.endsWith('/reserve'))).toBe(false);
+  });
+
+  it('never rate-limits a honeypot submission, which costs nothing to drop', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    const { keys, binding } = limiter([true, true]);
+    env.SUBMISSION_RATE_LIMITER = binding as unknown as typeof env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    const { ctx } = executionContext();
+    await worker.fetch(
+      new Request(`https://api.conform.test/f/${TEST_FORM_ID}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'x', _gotcha: 'caught' }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(keys).toHaveLength(0);
+  });
+
+  it('still delivers when no limiter is bound', async () => {
+    const routes = new Map<string, StoredRouteRecord>();
+    const env = baseEnv({ routes });
+    delete env.SUBMISSION_RATE_LIMITER;
+    await installRoute(env, routes);
+
+    expect((await submit(env)).status).toBe(200);
+  });
+});

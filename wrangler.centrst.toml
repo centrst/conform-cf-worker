@@ -82,3 +82,14 @@ new_sqlite_classes = ["FormRoute"]
 # live traffic, so a failure is gone the moment it happens.
 [observability]
 enabled = true
+
+[[ratelimits]]
+name = "SUBMISSION_RATE_LIMITER"
+namespace_id = "17002"
+
+[ratelimits.simple]
+# A human submits a contact form once. Twenty a minute per form leaves room for
+# a genuinely busy endpoint while stopping a bot dead; five a minute per client
+# caps a single source across every form it has found.
+limit = 20
+period = 60
