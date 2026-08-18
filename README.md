@@ -217,6 +217,38 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 npx wrangler secret put ACCOUNT_LOOKUP_SECRET
 ```
 
+### Granting an allowance
+
+`POST /v1/account/plans` sets what an inbox is entitled to. `monthly_limit`
+takes three kinds of value, and two of them look alike while meaning opposite
+things:
+
+| Value | Meaning |
+| --- | --- |
+| `null` | No ceiling is granted, so the deployment default applies. This is how a lapsed subscription is expressed — forms keep delivering on the free allowance rather than breaking. |
+| `0` | No ceiling at all. Same convention as `MONTHLY_LIMIT = "0"` on a deployment, and what an unlimited tier needs. |
+| `n` | Exactly `n` submissions a month. |
+
+```sh
+curl -X POST https://forms.example.com/v1/account/plans \
+  --header "Authorization: Bearer $ACCOUNT_LOOKUP_SECRET" \
+  --header 'Content-Type: application/json' \
+  --data '{"grants": [{"email": "them@example.com", "plan": "plus", "monthly_limit": 10000}]}'
+```
+
+`null` and `0` are never treated alike, and granting an unlimited tier as `null`
+gives it the free allowance instead — which is the mistake worth knowing about,
+since `null` is the more natural guess for "no limit".
+
+The day ceiling follows the allowance in force, so a granted inbox gets a fifth
+of what it was granted rather than a fifth of the deployment default. There is
+deliberately no value meaning "block this inbox": suspension is not a feature
+here, and `0` is taken.
+
+An unmetered inbox writes no usage rows at all, so nothing delivered while a
+`0` grant is in force counts against the allowance the inbox falls back to when
+the grant is revoked.
+
 ## Deploy it yourself
 
 Prerequisites:

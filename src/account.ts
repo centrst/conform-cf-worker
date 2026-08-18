@@ -136,9 +136,23 @@ interface PlanGrant {
  * the quota object. No email is stored, and the delivery path performs no
  * lookup: it reads the limit from the object it was already talking to.
  *
- * `monthly_limit: null` returns an inbox to the deployment default. That is how
- * a lapsed subscription is expressed — forms keep delivering on the free
- * allowance rather than breaking.
+ * `monthly_limit` takes three kinds of value, and two of them look alike to a
+ * caller while meaning opposite things:
+ *
+ *   null  — no ceiling is granted, so the deployment default applies. This is
+ *           how a lapsed subscription is expressed: forms keep delivering on
+ *           the free allowance rather than breaking.
+ *   0     — no ceiling at all, the same convention as MONTHLY_LIMIT="0" on a
+ *           deployment. This is what an unlimited tier needs.
+ *   n     — exactly n submissions a month.
+ *
+ * Only null was ever documented, which left the tier sold as having no monthly
+ * ceiling with no documented way to be granted one — and the natural guess,
+ * null, handed it the free allowance instead. Absent and zero must never
+ * collapse into each other; plan-grant.workers.test.ts pins all three.
+ *
+ * There is deliberately no value meaning "block this inbox". Suspension is not
+ * a feature here, and 0 is taken.
  */
 export async function setAccountPlans(request: Request, env: Env): Promise<Response> {
   await authorizeAccountLookup(request, env);
