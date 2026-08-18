@@ -113,7 +113,14 @@ export function submissionResultPage(
   outcome: SubmissionOutcome,
   message: string,
   status = 200,
+  // Why the submission was refused, field by field and rule by rule. Without
+  // it a no-JS form tells the visitor only that something was wrong, and the
+  // message the form's owner wrote for exactly this moment never arrives.
+  details: string[] = [],
 ): Response {
+  const list = details.length
+    ? `\n    <ul>${details.map((detail) => `<li>${escapeHtml(detail)}</li>`).join('')}</ul>`
+    : '';
   return new Response(
     `<!doctype html>
 <html lang="en">
@@ -123,7 +130,7 @@ export function submissionResultPage(
 <body>
   <main>
     <h1>${RESULT_HEADINGS[outcome]}</h1>
-    <p>${escapeHtml(message)}</p>
+    <p>${escapeHtml(message)}</p>${list}
     <p><a href="javascript:history.back()">Go back</a></p>
   </main>
 </body>

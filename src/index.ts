@@ -62,7 +62,7 @@ import {
   unindexStoredRoute,
   updateStoredRouteSettings,
 } from './routes';
-import { parseFormSchema, type FormSchema } from './schema';
+import { parseFormSchema, type FormSchema, type SubmissionError } from './schema';
 import { submit } from './submit';
 import {
   generateWebhookSecret,
@@ -901,7 +901,17 @@ async function handle(request: Request, env: Env, ctx: ExecutionContext): Promis
       return await submit(request, env, ctx, formId);
     } catch (error) {
       if (error instanceof ApiError && acceptsHtml(request)) {
-        return submissionResultPage('not-sent', error.message, ERROR_TABLE[error.code].status);
+        const details = Array.isArray(error.extras?.errors)
+          ? (error.extras.errors as SubmissionError[]).map((entry) =>
+              String(entry?.message ?? ''),
+            )
+          : [];
+        return submissionResultPage(
+          'not-sent',
+          error.message,
+          ERROR_TABLE[error.code].status,
+          details,
+        );
       }
       throw error;
     }

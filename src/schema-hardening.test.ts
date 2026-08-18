@@ -58,7 +58,9 @@ describe('properties schema.ts claims', () => {
       fields.name = 'ok';
       fields[name] = 'payload';
       expect(
-        validateSubmission(schema, fields).map((error) => error.field),
+        validateSubmission(schema, fields).flatMap((error) =>
+          'field' in error ? [error.field] : [],
+        ),
         name,
       ).toEqual([name]);
     }
