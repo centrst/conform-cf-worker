@@ -32,7 +32,8 @@ export function ensureSchema(sql: SqlStorage): void {
       warned_low INTEGER NOT NULL DEFAULT 0,
       warned_full INTEGER NOT NULL DEFAULT 0,
       failed INTEGER NOT NULL DEFAULT 0,
-      blocked INTEGER NOT NULL DEFAULT 0
+      blocked INTEGER NOT NULL DEFAULT 0,
+      throttled INTEGER NOT NULL DEFAULT 0
     )
   `);
   const columns = new Set(
@@ -49,6 +50,9 @@ export function ensureSchema(sql: SqlStorage): void {
   }
   if (!columns.has('blocked')) {
     sql.exec('ALTER TABLE usage ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.has('throttled')) {
+    sql.exec('ALTER TABLE usage ADD COLUMN throttled INTEGER NOT NULL DEFAULT 0');
   }
 
   // The plan is a property of the inbox, not of a month, so it lives in its own
@@ -225,6 +229,17 @@ export class InboxQuota implements DurableObject {
       return json({ rolledBack: true });
     }
 
+    if (url.pathname === '/throttled' && request.method === 'POST') {
+      // One row per month, created on demand: a throttle can be the first thing
+      // an inbox ever records, if a form is found by a bot before a human.
+      this.sql.exec(
+        `INSERT INTO usage (month, used, limit_count, throttled) VALUES (?1, 0, 0, 1)
+         ON CONFLICT(month) DO UPDATE SET throttled = usage.throttled + 1`,
+        month,
+      );
+      return json({ counted: true });
+    }
+
     if (url.pathname === '/insight' && request.method === 'GET') {
       const rows = this.sql
         .exec<{
@@ -233,8 +248,9 @@ export class InboxQuota implements DurableObject {
           limit_count: number;
           failed: number;
           blocked: number;
+          throttled: number;
         }>(
-          'SELECT month, used, limit_count, failed, blocked FROM usage ORDER BY month DESC LIMIT 13',
+          'SELECT month, used, limit_count, failed, blocked, throttled FROM usage ORDER BY month DESC LIMIT 13',
         )
         .toArray();
       const plan = this.storedPlan();
@@ -248,6 +264,7 @@ export class InboxQuota implements DurableObject {
           limit: row.limit_count,
           failed: row.failed,
           blocked: row.blocked,
+          throttled: row.throttled,
         })),
       });
     }
@@ -259,7 +276,7 @@ export class InboxQuota implements DurableObject {
 async function quotaRequest(
   env: Env,
   ownerId: string,
-  path: '/reserve' | '/rollback' | '/plan',
+  path: '/reserve' | '/rollback' | '/plan' | '/throttled',
   body: { limit?: number; month?: string; plan?: string; monthly_limit?: number | null },
 ): Promise<Response> {
   if (!env.QUOTAS) {
@@ -329,6 +346,7 @@ export interface InboxInsight {
     limit: number;
     failed: number;
     blocked: number;
+    throttled: number;
   }>;
 }
 
@@ -348,6 +366,20 @@ export async function getInboxInsight(env: Env, ownerId: string): Promise<InboxI
   });
   if (!response.ok) throw new Error('Insight lookup failed');
   return (await response.json()) as InboxInsight;
+}
+
+/**
+ * Records that submissions to this inbox were throttled.
+ *
+ * Called at most once per form per minute, not once per refused request: an
+ * attack is unbounded and this must not become a storage write per attempt,
+ * which is the amplification the throttle exists to prevent. So the number
+ * means "minutes in which throttling happened", not "requests refused".
+ */
+export async function countThrottled(env: Env, ownerId: string): Promise<void> {
+  if (!env.QUOTAS) return;
+  const response = await quotaRequest(env, ownerId, '/throttled', {});
+  if (!response.ok) throw new Error('Throttle count failed');
 }
 
 export async function rollbackQuota(

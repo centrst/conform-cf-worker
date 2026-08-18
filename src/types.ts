@@ -35,6 +35,7 @@ export interface Env {
   ROUTES: DurableObjectNamespace;
   REGISTRATION_RATE_LIMITER?: RateLimiter;
   SUBMISSION_RATE_LIMITER?: RateLimiter;
+  THROTTLE_REPORT_LIMITER?: RateLimiter;
 
   DELIVERY_MODE?: DeliveryMode;
   MONTHLY_LIMIT?: string;

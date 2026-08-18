@@ -449,6 +449,7 @@ async function insight(name: string) {
       limit: number;
       failed: number;
       blocked: number;
+      throttled: number;
     }>;
   };
 }
@@ -529,7 +530,7 @@ describe('InboxQuota delivery insight', () => {
     expect(serialized).not.toContain('cfm_');
     for (const month of report.months) {
       expect(Object.keys(month).sort()).toEqual(
-        ['blocked', 'delivered', 'failed', 'limit', 'month'],
+        ['blocked', 'delivered', 'failed', 'limit', 'month', 'throttled'],
       );
     }
   });
@@ -551,6 +552,83 @@ describe('InboxQuota delivery insight', () => {
 
     const report = await insight(inbox);
     expect(report.months[0]).toMatchObject({ delivered: 5, failed: 0, blocked: 0 });
+  });
+});
+
+async function countThrottle(name: string, month = MONTH) {
+  await quotaStub(name).fetch('https://quota.internal/throttled', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ month }),
+  });
+}
+
+describe('InboxQuota throttle counter', () => {
+  it('records a throttle on an inbox that has never delivered', async () => {
+    const inbox = 'throttle-first';
+    await countThrottle(inbox);
+
+    const report = await insight(inbox);
+    // A bot can find a form before any human uses it, so the month row has to
+    // be created by the throttle itself.
+    expect(report.months[0]).toMatchObject({
+      month: MONTH,
+      delivered: 0,
+      throttled: 1,
+    });
+  });
+
+  it('accumulates without disturbing the delivered count', async () => {
+    const inbox = 'throttle-accumulate';
+    await reserve(inbox, 10);
+    await countThrottle(inbox);
+    await countThrottle(inbox);
+    await reserve(inbox, 10);
+
+    expect((await insight(inbox)).months[0]).toMatchObject({
+      delivered: 2,
+      throttled: 2,
+    });
+  });
+
+  it('never consumes the allowance', async () => {
+    const inbox = 'throttle-free';
+    for (let i = 0; i < 5; i += 1) await countThrottle(inbox);
+
+    // Throttled requests are refused before reservation; counting them must not
+    // quietly spend what it refused to deliver.
+    const next = await reserve(inbox, 2);
+    expect(next).toMatchObject({ allowed: true, used: 1 });
+  });
+
+  it('keeps throttle counts per month', async () => {
+    const inbox = 'throttle-months';
+    await countThrottle(inbox, '2026-07');
+    await countThrottle(inbox, '2026-08');
+    await countThrottle(inbox, '2026-08');
+
+    const report = await insight(inbox);
+    const byMonth = Object.fromEntries(report.months.map((m) => [m.month, m.throttled]));
+    expect(byMonth['2026-08']).toBe(2);
+    expect(byMonth['2026-07']).toBe(1);
+  });
+
+  it('starts at zero on a namespace migrated from the old schema', async () => {
+    const inbox = 'throttle-legacy';
+    await runInDurableObject(
+      quotaStub(inbox),
+      (_instance: InboxQuota, state: DurableObjectState) => {
+        const sql = state.storage.sql;
+        sql.exec('DROP TABLE usage');
+        sql.exec(
+          'CREATE TABLE usage (month TEXT PRIMARY KEY, used INTEGER NOT NULL, limit_count INTEGER NOT NULL)',
+        );
+        sql.exec("INSERT INTO usage (month, used, limit_count) VALUES ('2026-08', 4, 10)");
+        ensureSchema(sql);
+      },
+    );
+
+    expect((await insight(inbox)).months[0]).toMatchObject({ delivered: 4, throttled: 0 });
   });
 });
 

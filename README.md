@@ -80,6 +80,7 @@ low-warning sent
 full-warning sent
 failed count
 blocked count
+throttled count
 ```
 
 The two warning flags record that the owner has already been told their
@@ -96,6 +97,11 @@ who submitted what, or when — only how many. Spam caught by the honeypot is
 deliberately not tallied: counting it would mean a storage write per abusive
 request, which is the amplification the honeypot exists to avoid.
 
+The throttled count is sampled for the same reason. Submissions refused by the
+rate limiter are recorded at most once per form per minute, so the number means
+"minutes in which throttling happened", not "requests refused" — an attack is
+unbounded, and recording one must never scale with it.
+
 The Durable Object itself is addressed by the opaque inbox ID.
 
 ### Data processed elsewhere
@@ -105,7 +111,7 @@ The Durable Object itself is addressed by the opaque inbox ID.
 | Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
 | Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
 | Alias | Stored with the route | Included when building the email | Included in the email |
-| Quota | Opaque ID, month, counts (delivered, failed, blocked), limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
+| Quota | Opaque ID, month, counts (delivered, failed, blocked, throttled), limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
 | Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent |
 
 No hosted service can honestly promise that its operator is technically unable
