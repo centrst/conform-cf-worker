@@ -1,4 +1,9 @@
 /**
+ * MIT licensed — see LICENSE-SNIPPETS. This file and everything it generates
+ * are deliberately under different terms from the rest of the repository,
+ * because these artifacts end up inside other people's websites and nobody
+ * should inherit an obligation from a form they pasted out of the docs.
+ *
  * Generated install artifacts. These are tested contract surface
  * (install.test.ts) — change templates and their tests together.
  *
@@ -330,6 +335,7 @@ export function installFiles(framework: Framework, endpoint: string): InstallFil
 
 export function installNotes(framework: Framework): string[] {
   const notes = [
+    'This generated code is MIT licensed and carries no obligations, whatever licence the delivery engine uses.',
     'Submissions deliver only after the destination inbox is verified — poll the status URL until status is "active". The endpoint URL will not change.',
     'The hidden _gotcha field is a spam trap. Keep it in the form and never fill it.',
     'Verify delivery with a marked test: add _test=true to a submission; the response returns test: true as proof and the email arrives with a [Test] subject.',

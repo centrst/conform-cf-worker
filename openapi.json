@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "summary": "Form-to-email endpoints with no account requirement.",
     "description": "conForm by Centrst turns one POST into a permanent form endpoint that delivers submissions to a verified inbox. No API key or signup is required. The only human step: the destination inbox must confirm a verification email before delivery starts — poll the route status until `status` is `active`; the endpoint URL never changes while pending. Every response is JSON (except the HTML verification page); every failure carries a stable `error` code from `x-conform-error-codes` plus a `retryable` flag. Submissions are never stored: fields exist in Worker memory only for the duration of delivery. Self-hosted deployments of the open-source Worker expose this same API at their own origin.",
-    "license": { "name": "MIT", "identifier": "MIT" }
+    "license": { "name": "FSL-1.1-ALv2", "url": "https://fsl.software/" }
   },
   "servers": [
     {
@@ -84,7 +84,7 @@
       "get": {
         "operationId": "getGenericInstallCode",
         "summary": "Generic install artifact",
-        "description": "Ready-to-install, accessible form code with a `{{FORM_ENDPOINT}}` placeholder — for previews, documentation, and drift checks. Use `/v1/routes/{formId}/install` for code with the real endpoint baked in.",
+        "description": "MIT licensed, whatever the engine is licensed under \u2014 these artifacts go inside your site and carry no obligation. Ready-to-install, accessible form code with a `{{FORM_ENDPOINT}}` placeholder — for previews, documentation, and drift checks. Use `/v1/routes/{formId}/install` for code with the real endpoint baked in.",
         "parameters": [
           { "$ref": "#/components/parameters/FrameworkParam" },
           { "$ref": "#/components/parameters/RawParam" }
@@ -110,7 +110,7 @@
       "get": {
         "operationId": "getInstallCode",
         "summary": "Personalized install artifact",
-        "description": "The same accessible form code with this route's real endpoint baked in, plus the route's current status and `next_action`. The `test_command` submits a `_test`-marked submission for delivery proof.",
+        "description": "MIT licensed, whatever the engine is licensed under. The same accessible form code with this route's real endpoint baked in, plus the route's current status and `next_action`. The `test_command` submits a `_test`-marked submission for delivery proof.",
         "parameters": [
           { "$ref": "#/components/parameters/FormId" },
           { "$ref": "#/components/parameters/FrameworkParam" },

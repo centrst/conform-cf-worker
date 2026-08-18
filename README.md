@@ -6,6 +6,28 @@ delivery engine.
 
 Source: <https://github.com/centrst/conform-cf-worker>
 
+## Licence
+
+Two licences, split along the line where code leaves this repository and lands
+in somebody else's website.
+
+**The engine is [FSL-1.1-ALv2](https://fsl.software/)** — read it, run it, modify
+it, self-host it, and use it in professional services for your clients. The one
+thing it does not permit is offering it to the general public as a product that
+substitutes for conForm. Two years after each release, that version becomes
+Apache 2.0 automatically.
+
+If you build sites for clients and want to run conForm for them and charge for
+it: that is a Permitted Purpose and it is meant to be. The restriction exists to
+stop a rebranded conForm being sold to the public at a dollar less, not to stop
+practitioners working.
+
+**Install artifacts are MIT** — `src/templates.ts` and everything
+`GET /v1/install` generates, covered by `LICENSE-SNIPPETS`. Those artifacts end
+up inside other people's sites, and nobody should inherit an obligation from a
+form they copied out of a documentation page. The install response says
+`"license": "MIT"` so an agent never has to infer it.
+
 ## The model
 
 A form has two different names:

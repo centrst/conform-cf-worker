@@ -44,6 +44,10 @@ function respond(
     success: true,
     framework,
     files,
+    // Stated on the artifact itself so an agent installing this never has to
+    // infer which licence applies from the repository it came out of. The
+    // engine is FSL; what you paste into your site is not.
+    license: 'MIT',
     notes: installNotes(framework),
     test_command: testCommand(endpoint),
     ...extra,
