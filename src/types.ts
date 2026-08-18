@@ -95,9 +95,22 @@ export interface RouteDeliveryConfig {
   webhook?: WebhookDeliveryConfig;
 }
 
+/**
+ * Stamped on every sealed route payload. Nothing branches on it -- openToken
+ * checks it is one of the accepted values and no other code reads it -- so it
+ * is a single constant rather than a value derived from which optional fields
+ * happen to be set. It was `schema ? 3 : delivery ? 2 : 1`, written out three
+ * times, encoding a model that discriminated nothing and could not express
+ * "delivery, no schema, written by a current build".
+ */
+export const ROUTE_PAYLOAD_VERSION = 3;
+
+/** Versions openToken will still open. Older tokens stay valid indefinitely. */
+export type RoutePayloadVersion = 1 | 2 | 3;
+
 export interface RouteTokenPayload {
   kind: 'route';
-  version: 1 | 2 | 3;
+  version: RoutePayloadVersion;
   ownerId: string;
   routeId: string;
   email: string;
@@ -116,7 +129,7 @@ export interface RouteTokenPayload {
 
 export interface PendingRoutePayload {
   kind: 'pending';
-  version: 1 | 2 | 3;
+  version: RoutePayloadVersion;
   ownerId: string;
   routeId: string;
   email: string;

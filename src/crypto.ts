@@ -16,6 +16,12 @@ type TokenPayload =
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const TOKEN_PREFIX = 'cf1';
+/**
+ * Every version ever minted. Tokens are long-lived and held by customers, so
+ * this list only ever grows; ROUTE_PAYLOAD_VERSION in types.ts is what new
+ * payloads are stamped with.
+ */
+const ACCEPTED_PAYLOAD_VERSIONS: number[] = [1, 2, 3];
 const FORM_ID_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 function base64UrlEncode(bytes: Uint8Array): string {
@@ -212,7 +218,7 @@ export async function openToken<T extends TokenPayload>(
   const payload = JSON.parse(decoder.decode(plaintext)) as T;
   const version = payload.version as number;
   // Enumerated, not a range: a NaN version satisfies neither `< 1` nor `> 3`.
-  if (payload.kind !== expectedKind || ![1, 2, 3].includes(version)) {
+  if (payload.kind !== expectedKind || !ACCEPTED_PAYLOAD_VERSIONS.includes(version)) {
     throw new TokenError('Invalid conForm route token payload');
   }
   return payload;

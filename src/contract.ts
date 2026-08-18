@@ -1,3 +1,5 @@
+import type { RouteAccessKey } from './types';
+
 export const POLL_INTERVAL_SECONDS = 15;
 
 export type NextAction =
@@ -52,4 +54,14 @@ export function routeResource(args: RouteResourceArgs): Record<string, unknown> 
 export function quotaResetsAt(month: string): string {
   const [year, monthNumber] = month.split('-').map(Number);
   return new Date(Date.UTC(year, monthNumber, 1)).toISOString();
+}
+
+/** Keys are listed by label and state. The value itself is returned only at mint. */
+export function keyResource(key: RouteAccessKey, index: number) {
+  return {
+    key_id: key.keyId,
+    state: index === 0 ? 'current' : 'previous',
+    created_at: key.createdAt,
+    ...(key.usedAt ? { first_used_at: key.usedAt } : {}),
+  };
 }

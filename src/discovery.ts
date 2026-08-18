@@ -179,3 +179,35 @@ Key facts for agents
 ${env.MCP_URL ? `- MCP server: ${env.MCP_URL}\n` : ''}${env.DOCS_URL ? `- Docs: ${env.DOCS_URL}\n` : ''}- Source: ${env.SOURCE_URL || 'https://github.com/centrst/conform-cf-worker'}
 `;
 }
+
+/**
+ * The published spec with this deployment's identity substituted in. Only the
+ * two fields that name an operator change; every path, schema and error code is
+ * the contract and is identical everywhere.
+ */
+export function deploymentSpec(env: Env, origin: string): Record<string, unknown> {
+  const base = publicUrl(env, origin);
+  const operator = env.OPERATOR_NAME?.trim();
+  const spec = openapiSpec as unknown as {
+    info: { description: string; title: string };
+    servers: { url: string; description: string }[];
+  };
+  return {
+    ...spec,
+    info: {
+      ...spec.info,
+      description: spec.info.description.replace(
+        'conForm by Centrst turns',
+        operator ? `conForm by ${operator} turns` : 'conForm turns',
+      ),
+    },
+    servers: [
+      {
+        url: base,
+        description: operator
+          ? `conForm hosted by ${operator}.`
+          : 'This conForm deployment.',
+      },
+    ],
+  };
+}

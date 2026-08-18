@@ -1,27 +1,17 @@
 import { handleMcp } from '../mcp/src/index';
-import openapiSpec from '../openapi.json';
 import { accountInsight, listAccountRoutes, setAccountPlans } from './account';
 import {
   DestinationCapacityError,
   ensureDestinationAddress,
 } from './cloudflare-destinations';
 import {
-  dailyLimit,
   deliveryMode,
-  maxFieldLength,
-  maxFields,
-  maxRequestSize,
-  monthlyLimit,
 } from './config';
-import { nextActionFor, quotaResetsAt, routeResource } from './contract';
-import { discoveryDocument, llmsText } from './discovery';
+import { routeResource } from './contract';
+import { deploymentSpec, discoveryDocument, llmsText } from './discovery';
 import { genericInstall, routeInstall } from './install';
 import {
-  accessKeyHash,
   deriveRouteId,
-  generateAccessKey,
-  generateKeyId,
-  isValidAccessKey,
   isValidEmail,
   isValidFormId,
   normalizeEmail,
@@ -33,11 +23,8 @@ import {
   sealToken,
 } from './crypto';
 import {
-  publicUrl,
   routeStatusUrl,
   sendArbitraryVerification,
-  sendQuotaWarning,
-  sendSubmissionEmail,
   submissionEndpoint,
 } from './email';
 import {
@@ -48,42 +35,45 @@ import {
   errorResponse,
   json,
 } from './errors';
+import {
+  listRouteKeys,
+  mintRotationToken,
+  mintRouteKey,
+} from './access-keys';
+import {
+  acceptsHtml,
+  createFormUrl,
+  placeholderGuidancePage,
+  submissionResultPage,
+  verificationPage,
+} from './pages';
 import { isPlaceholderFormId } from './placeholders';
 import {
   InboxQuota,
-  countThrottled,
   getInboxPlan,
-  peekQuota,
-  reserveQuota,
-  rollbackQuota,
 } from './quota';
 import {
-  acceptStoredAccessKey,
   activateStoredRoute,
   createStoredRoute,
   deleteStoredRoute,
   FormRoute,
   getStoredRoute,
   indexStoredRoute,
-  mintStoredAccessKey,
   unindexStoredRoute,
   updateStoredRouteSettings,
 } from './routes';
-import { parseFormSchema, validateSubmission, type FormSchema } from './schema';
-import { parseSubmission } from './submission';
+import { parseFormSchema, type FormSchema } from './schema';
+import { submit } from './submit';
 import {
-  deliverWebhook,
   generateWebhookSecret,
-  submissionEvent,
   validateWebhookUrl,
 } from './webhook';
 import { refreshVerifiedRoute } from './verification';
+import { ROUTE_PAYLOAD_VERSION } from './types';
 import type {
   Env,
   ManageTokenPayload,
   PendingRoutePayload,
-  RotateTokenPayload,
-  RouteAccessKey,
   RouteDeliveryConfig,
   RouteDeliveryMode,
   RouteTokenPayload,
@@ -107,7 +97,7 @@ function routePayload(
 ): RouteTokenPayload {
   return {
     kind: 'route',
-    version: schema ? 3 : delivery ? 2 : 1,
+    version: ROUTE_PAYLOAD_VERSION,
     email,
     formName,
     ownerId,
@@ -253,21 +243,6 @@ async function mintManagementToken(
 ): Promise<string> {
   const payload: ManageTokenPayload = {
     kind: 'manage',
-    version: 1,
-    routeId: formId,
-    ownerId,
-    issuedAt: Date.now(),
-  };
-  return sealToken(payload, env.ROUTE_TOKEN_SECRET);
-}
-
-async function mintRotationToken(
-  env: Env,
-  formId: string,
-  ownerId: string,
-): Promise<string> {
-  const payload: RotateTokenPayload = {
-    kind: 'rotate',
     version: 1,
     routeId: formId,
     ownerId,
@@ -510,88 +485,6 @@ async function createRoute(request: Request, env: Env): Promise<Response> {
   );
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
-}
-
-const HTML_PAGE_HEADERS = {
-  'Content-Type': 'text/html; charset=utf-8',
-  'Cache-Control': 'no-store',
-  'Content-Security-Policy':
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-  'Referrer-Policy': 'no-referrer',
-  'X-Content-Type-Options': 'nosniff',
-  'X-Frame-Options': 'DENY',
-};
-
-function verificationPage(token: string): Response {
-  const safeToken = escapeHtml(token);
-  return new Response(
-    `<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Confirm conForm route</title>
-<body>
-  <main>
-    <h1>Confirm this conForm route</h1>
-    <p>Confirm that this inbox should receive the form submissions.</p>
-    <form method="post" action="/v1/routes/verify">
-      <input type="hidden" name="token" value="${safeToken}">
-      <button type="submit">Confirm inbox</button>
-    </form>
-  </main>
-</body>
-</html>`,
-    { headers: HTML_PAGE_HEADERS },
-  );
-}
-
-function acceptsHtml(request: Request): boolean {
-  const accept = request.headers.get('accept') ?? '';
-  return accept.includes('text/html') && !accept.includes('application/json');
-}
-
-/**
- * Someone posted to a documentation sample. They are mid-evaluation with a form
- * already wired up, so answer in the browser they are standing in rather than
- * leaving them with a bare 404. Nothing they submitted is read, logged or kept.
- */
-function placeholderGuidancePage(createUrl: string): Response {
-  const href = escapeHtml(createUrl);
-  return new Response(
-    `<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>conForm — example endpoint</title>
-<body>
-  <main>
-    <h1>That was the example endpoint</h1>
-    <p>
-      The form ID in that snippet is a sample from the documentation, so it is
-      not connected to any inbox and your submission was not delivered or
-      stored.
-    </p>
-    <p>Your form markup is already correct. It needs your own endpoint:</p>
-    <ol>
-      <li><a href="${href}">Create a form endpoint</a> with the inbox that should receive submissions.</li>
-      <li>Confirm the verification email so delivery can begin.</li>
-      <li>Swap the sample ID in your <code>action</code> for the one you were given.</li>
-    </ol>
-    <p>No account is required and nothing is retained after delivery.</p>
-  </main>
-</body>
-</html>`,
-    { status: ERROR_TABLE.placeholder_endpoint.status, headers: HTML_PAGE_HEADERS },
-  );
-}
-
 /**
  * Where someone is sent to create their own endpoint. Derived from DOCS_URL,
  * which points at the docs index one level below the product page. The trailing
@@ -602,43 +495,6 @@ function placeholderGuidancePage(createUrl: string): Response {
  * document names the create endpoint. It used to be a Centrst marketing page,
  * which meant a self-hosted install quietly sent its own users to the vendor.
  */
-/**
- * The published spec with this deployment's identity substituted in. Only the
- * two fields that name an operator change; every path, schema and error code is
- * the contract and is identical everywhere.
- */
-function deploymentSpec(env: Env, origin: string): Record<string, unknown> {
-  const base = publicUrl(env, origin);
-  const operator = env.OPERATOR_NAME?.trim();
-  const spec = openapiSpec as unknown as {
-    info: { description: string; title: string };
-    servers: { url: string; description: string }[];
-  };
-  return {
-    ...spec,
-    info: {
-      ...spec.info,
-      description: spec.info.description.replace(
-        'conForm by Centrst turns',
-        operator ? `conForm by ${operator} turns` : 'conForm turns',
-      ),
-    },
-    servers: [
-      {
-        url: base,
-        description: operator
-          ? `conForm hosted by ${operator}.`
-          : 'This conForm deployment.',
-      },
-    ],
-  };
-}
-
-function createFormUrl(env: Env, origin: string): string {
-  if (!env.DOCS_URL) return `${publicUrl(env, origin)}/`;
-  const docs = env.DOCS_URL.endsWith('/') ? env.DOCS_URL : `${env.DOCS_URL}/`;
-  return new URL('../#create-form', docs).toString();
-}
 
 /**
  * A copied sample being tried is a funnel signal worth counting. Only the
@@ -648,39 +504,6 @@ function createFormUrl(env: Env, origin: string): string {
 function countPlaceholderAttempt(formId: string): void {
   console.log(
     JSON.stringify({ event: 'placeholder_endpoint_attempt', form_id: formId }),
-  );
-}
-
-type SubmissionOutcome = 'sent' | 'not-sent' | 'dry-run';
-
-const RESULT_HEADINGS: Record<SubmissionOutcome, string> = {
-  sent: 'Submission sent',
-  'not-sent': 'Submission not sent',
-  // Never "sent". A dry run that renders a thank-you page is how a `_dry_run`
-  // field shipped into a live form goes unnoticed for a month.
-  'dry-run': 'Dry run — nothing was sent',
-};
-
-function submissionResultPage(
-  outcome: SubmissionOutcome,
-  message: string,
-  status = 200,
-): Response {
-  return new Response(
-    `<!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>conForm</title>
-<body>
-  <main>
-    <h1>${RESULT_HEADINGS[outcome]}</h1>
-    <p>${escapeHtml(message)}</p>
-    <p><a href="javascript:history.back()">Go back</a></p>
-  </main>
-</body>
-</html>`,
-    { status, headers: HTML_PAGE_HEADERS },
   );
 }
 
@@ -821,113 +644,6 @@ async function managedRoute(
 }
 
 /**
- * Authorises key rotation. Accepts a rotation token or the more powerful
- * management token, but a rotation token can do nothing else -- which is the
- * point of it existing, because this is the credential that lives in CI.
- */
-async function rotatableRoute(
-  request: Request,
-  env: Env,
-  formId: string,
-): Promise<StoredRouteRecord> {
-  const authorization = request.headers.get('Authorization');
-  if (!authorization?.startsWith('Bearer ')) {
-    throw new ApiError(
-      'rotation_token_required',
-      'Rotating access keys requires a rotation or management token as a Bearer Authorization header',
-    );
-  }
-  const token = authorization.slice('Bearer '.length).trim();
-  let payload: RotateTokenPayload | ManageTokenPayload;
-  try {
-    payload = await openToken<RotateTokenPayload>(token, 'rotate', env.ROUTE_TOKEN_SECRET);
-  } catch (rotateError) {
-    if (!(rotateError instanceof TokenError)) throw rotateError;
-    try {
-      payload = await openToken<ManageTokenPayload>(token, 'manage', env.ROUTE_TOKEN_SECRET);
-    } catch (manageError) {
-      if (manageError instanceof TokenError) {
-        throw new ApiError('rotation_token_invalid', 'The rotation token is not valid');
-      }
-      throw manageError;
-    }
-  }
-  if (!isValidFormId(formId)) {
-    throw new ApiError('route_not_found', 'Form route not found');
-  }
-  const record = await getStoredRoute(env, formId);
-  if (!record) throw new ApiError('route_not_found', 'Form route not found');
-  if (payload.routeId !== formId || payload.ownerId !== record.ownerId) {
-    throw new ApiError(
-      'rotation_token_invalid',
-      'The rotation token does not match this route',
-    );
-  }
-  return record;
-}
-
-/** Keys are listed by label and state. The value itself is returned only at mint. */
-function keyResource(key: RouteAccessKey, index: number) {
-  return {
-    key_id: key.keyId,
-    state: index === 0 ? 'current' : 'previous',
-    created_at: key.createdAt,
-    ...(key.usedAt ? { first_used_at: key.usedAt } : {}),
-  };
-}
-
-async function listRouteKeys(
-  request: Request,
-  env: Env,
-  formId: string,
-): Promise<Response> {
-  const record = await rotatableRoute(request, env, formId);
-  return json({
-    success: true,
-    form_id: formId,
-    require_key: Boolean(record.requireKey),
-    keys: (record.accessKeys ?? []).map(keyResource),
-  });
-}
-
-async function mintRouteKey(request: Request, env: Env, formId: string): Promise<Response> {
-  const record = await rotatableRoute(request, env, formId);
-
-  if (env.ROTATION_RATE_LIMITER) {
-    const allowed = await env.ROTATION_RATE_LIMITER.limit({ key: `rotate:${formId}` });
-    if (!allowed.success) {
-      throw new ApiError('rate_limited', 'Too many key rotations. Try again shortly.', {
-        retry_after_seconds: 60,
-      });
-    }
-  }
-
-  const key = generateAccessKey();
-  const minted: RouteAccessKey = {
-    keyId: generateKeyId(),
-    hash: await accessKeyHash(key, env.OWNER_HASH_SECRET),
-    createdAt: new Date().toISOString(),
-  };
-  const keys = await mintStoredAccessKey(env, formId, minted);
-  if (!keys) throw new ApiError('route_not_found', 'Form route not found');
-
-  return json(
-    {
-      success: true,
-      form_id: formId,
-      key,
-      key_id: minted.keyId,
-      require_key: Boolean(record.requireKey),
-      keys: keys.map(keyResource),
-      message:
-        'Send this value as the access_key field. It is returned once. The key it replaces ' +
-        'stays valid until this one is first accepted, so a failed deploy costs nothing.',
-    },
-    201,
-  );
-}
-
-/**
  * Schema validation is the paid feature on the hosted service, so entitlement
  * is checked here rather than on the delivery path: one plan read when a schema
  * is set, none per submission. A schema already attached keeps working if a
@@ -998,7 +714,7 @@ async function updateRouteSettings(
     // resealing rather than writing a column beside it.
     const next: RouteTokenPayload = {
       ...current,
-      version: schema ? 3 : current.delivery ? 2 : 1,
+      version: ROUTE_PAYLOAD_VERSION,
       ...(schema ? { schema } : {}),
     };
     if (!schema) delete next.schema;
@@ -1029,419 +745,6 @@ async function deleteRoute(request: Request, env: Env, formId: string): Promise<
   await deleteStoredRoute(env, formId);
   await unindexStoredRoute(env, record.ownerId, formId);
   return json({ success: true, status: 'deleted', form_id: formId });
-}
-
-function validatedRedirect(value: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new ApiError('invalid_redirect_url', 'Redirect must be an absolute https:// URL');
-  }
-  if (parsed.protocol !== 'https:') {
-    throw new ApiError('invalid_redirect_url', 'Redirect must be an absolute https:// URL');
-  }
-  return parsed.toString();
-}
-
-function submissionSuccess(
-  request: Request,
-  redirect: string | undefined,
-  body: Record<string, unknown>,
-): Response {
-  if (redirect) {
-    return new Response(null, {
-      status: 303,
-      headers: { Location: redirect, 'Cache-Control': 'no-store' },
-    });
-  }
-  if (acceptsHtml(request)) {
-    return submissionResultPage('sent', String(body.message));
-  }
-  return json(body);
-}
-
-/**
- * Matches the submitted `access_key` against the route's live keys.
- *
- * The key is not proof of origin -- it is inlined into a page a scraper
- * already reads. What it buys is rotation: the endpoint, the route and the
- * inbox all stay put while the value a harvested payload carries goes stale.
- *
- * Enforcement is a separate switch (`requireKey`). Until it is on, a wrong or
- * missing key still delivers, so a customer can mint keys, ship them, and only
- * then start refusing -- rather than breaking their own form at step one.
- */
-async function checkAccessKey(
-  env: Env,
-  record: StoredRouteRecord,
-  parsed: { allFields: Record<string, string | string[]> },
-): Promise<RouteAccessKey | undefined> {
-  const keys = record.accessKeys ?? [];
-  if (keys.length === 0) {
-    // Enforcement on with nothing to enforce against must refuse, not admit.
-    // The API guard that prevents this state lives in updateRouteSettings, in
-    // another function; the Durable Object itself will accept it. An invariant
-    // held in one of two write paths is one refactor from being lost, and this
-    // one fails in the direction of silently disabling the control.
-    if (record.requireKey) {
-      throw new ApiError(
-        'access_key_required',
-        'This form requires an access_key but has none. Mint one to restore delivery.',
-      );
-    }
-    return undefined;
-  }
-
-  const raw = parsed.allFields.access_key;
-  const presented = (Array.isArray(raw) ? raw[0] : raw)?.trim();
-
-  if (!presented) {
-    if (record.requireKey) {
-      throw new ApiError(
-        'access_key_required',
-        'This form requires an access_key field.',
-      );
-    }
-    return undefined;
-  }
-
-  const presentedHash = isValidAccessKey(presented)
-    ? await accessKeyHash(presented, env.OWNER_HASH_SECRET)
-    : undefined;
-  const matched = presentedHash
-    ? keys.find((key) => key.hash === presentedHash)
-    : undefined;
-  if (!matched && record.requireKey) {
-    throw new ApiError('access_key_invalid', 'The access_key is not valid for this form.');
-  }
-  return matched;
-}
-
-/**
- * A dry run never redirects and never reports a plain success, however the
- * form was configured. A `_dry_run` field shipped into a live page by accident
- * would otherwise swallow every real submission behind a thank-you page.
- */
-function dryRunSuccess(request: Request, extra: Record<string, unknown> = {}): Response {
-  const message =
-    'Dry run — nothing was delivered and no allowance was spent. ' +
-    'Remove the _dry_run field to submit for real.';
-  const body = {
-    success: true,
-    dry_run: true,
-    delivered: false,
-    ...extra,
-    message,
-  };
-  if (acceptsHtml(request)) return submissionResultPage('dry-run', message);
-  return json(body);
-}
-
-async function submit(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  formId: string,
-): Promise<Response> {
-  const parsed = await parseSubmission(request, {
-    maxBytes: maxRequestSize(env),
-    maxFields: maxFields(env),
-    maxFieldLength: maxFieldLength(env),
-  });
-  const redirect =
-    parsed.redirect !== undefined ? validatedRedirect(parsed.redirect) : undefined;
-  if (parsed.spam) {
-    // A dry run must answer identically whether or not the trap fired. The
-    // honeypot's only property is that a caller cannot tell it caught them,
-    // and a validate mode that reported it would hand that away for free.
-    //
-    // "Identically" means the same keys, not just the same status: returning
-    // the bare envelope here while the clean path added `would_deliver` made
-    // the absence of that one field a free oracle. Two dry runs, one with the
-    // field populated, named the trap.
-    if (parsed.dryRun) return dryRunSuccess(request, { would_deliver: true });
-    return submissionSuccess(request, redirect, {
-      success: true,
-      message: 'Submission received',
-    });
-  }
-  if (Object.keys(parsed.fields).length === 0) {
-    throw new ApiError('submission_empty', 'Form data is required');
-  }
-
-  if (!isValidFormId(formId)) {
-    throw new ApiError('route_not_found', 'Form route not found');
-  }
-
-  // Sits after the honeypot (which costs nothing to reject) and before the
-  // route lookup, so a burst is turned away without touching storage.
-  //
-  // This is the control that makes an unmetered allowance safe. A monthly
-  // quota bounds the total but not the rate, so without this a scraped form
-  // delivers its flood as fast as the attacker can send it -- into the
-  // customer's own inbox. Two keys: the form, so one abused endpoint cannot
-  // affect another, and the client, so a single source is capped regardless of
-  // how many forms it found.
-  if (env.SUBMISSION_RATE_LIMITER) {
-    const clientAddress = request.headers.get('cf-connecting-ip') || 'unknown';
-    const clientId = await ownerIdForEmail(
-      `submission-client:${clientAddress}`,
-      env.OWNER_HASH_SECRET,
-    );
-    // Two bindings, not one, because the ceilings differ: a form may legitimately
-    // be busy, a single client never is. Sharing one binding is what made the
-    // per-client limit silently equal to the per-form one.
-    //
-    // Keyed by client AND form. A key of client alone is shared fate across
-    // every tenant on a hosted deployment: one office NAT, one CGNAT pool or
-    // one mobile carrier exit would be capped at two submissions a minute
-    // across every customer's forms combined, and the third real visitor gets
-    // an error the form owner never hears about. That is the exact failure the
-    // per-form ceiling is deliberately kept loose to avoid. What it gives up is
-    // capping one source across many forms at once -- weak protection anyway,
-    // since each form has its own ceiling and each inbox its own day cap.
-    const clientLimiter = env.SUBMISSION_CLIENT_RATE_LIMITER ?? env.SUBMISSION_RATE_LIMITER;
-    const [formLimit, clientLimit] = await Promise.all([
-      env.SUBMISSION_RATE_LIMITER.limit({ key: `form:${formId}` }),
-      clientLimiter.limit({ key: `client:${clientId}:${formId}` }),
-    ]);
-    if (!formLimit.success || !clientLimit.success) {
-      // Record that this inbox is being throttled, but at most once per form
-      // per minute. An attack is unbounded, so counting every refused request
-      // would turn the throttle into the storage amplification it exists to
-      // prevent -- and the route lookup needed to find the inbox is itself the
-      // work being avoided. The reporting limiter buys that lookup once a
-      // minute, which is enough for the owner to see it happening.
-      if (env.THROTTLE_REPORT_LIMITER) {
-        const report = await env.THROTTLE_REPORT_LIMITER.limit({ key: `report:${formId}` });
-        if (report.success) {
-          ctx.waitUntil(
-            (async () => {
-              const throttledRoute = await getStoredRoute(env, formId);
-              if (!throttledRoute) return;
-              await countThrottled(env, throttledRoute.quotaKey ?? throttledRoute.ownerId);
-            })().catch(() => undefined),
-          );
-        }
-      }
-      throw new ApiError('rate_limited', 'Too many submissions. Try again in a minute.', {
-        retry_after_seconds: 60,
-      });
-    }
-  }
-
-  const found = await getStoredRoute(env, formId);
-  if (!found) throw new ApiError('route_not_found', 'Form route not found');
-  const record = await refreshVerifiedRoute(env, found);
-  await indexStoredRoute(env, record.ownerId, record.formId, record.createdAt);
-  if (record.status !== 'active') {
-    const origin = new URL(request.url).origin;
-    throw new ApiError('inbox_not_verified', 'This inbox has not been verified yet.', {
-      next_action: nextActionFor('pending', routeStatusUrl(env, origin, formId)),
-    });
-  }
-  const acceptedKey = await checkAccessKey(env, record, parsed);
-
-  const route = await openToken<RouteTokenPayload>(
-    record.encryptedRoute,
-    'route',
-    env.ROUTE_TOKEN_SECRET,
-  );
-  if (
-    route.routeId !== record.formId ||
-    route.ownerId !== record.ownerId ||
-    route.formName !== record.alias
-  ) {
-    throw new Error('Stored route metadata does not match its encrypted payload');
-  }
-
-  // Before the reservation, so a submission refused on its shape costs the
-  // owner nothing. This is the only check that can reject on merits rather
-  // than on fingerprints -- and it exists only because the form said what it
-  // is. Errors are per-field and go to everyone: the schema is derivable from
-  // the page an attacker already scraped, so withholding detail protects
-  // nothing and leaves real integrators debugging blind.
-  if (route.schema) {
-    const errors = validateSubmission(route.schema, parsed.fields);
-    if (errors.length > 0) {
-      throw new ApiError('submission_invalid', 'This submission does not match the form.', {
-        errors,
-      });
-    }
-  }
-
-  const quotaKey = record.quotaKey ?? record.ownerId;
-
-  // Everything above this line is a check; everything below it spends
-  // something. A dry run runs the checks and stops -- so it reports the exact
-  // error a real submission would, and reports it having sent no mail, posted
-  // no webhook, and consumed no allowance.
-  //
-  // The cost is honest: a dry run makes probing a form cheaper and quieter than
-  // submitting for real. The rate limiter above bounds it to the same rate as
-  // a real submission, which is the control that matters.
-  if (parsed.dryRun) {
-    const routeDelivery = route.delivery;
-    const mode: RouteDeliveryMode = routeDelivery?.mode ?? 'email';
-    const quota = await peekQuota(env, quotaKey, monthlyLimit(env));
-    const withinMonth = quota.limit === 0 || quota.used < quota.limit;
-    const withinDay = dailyLimit(env) === 0 || quota.day_used < dailyLimit(env);
-    // The counters and the delivery plan are the owner's business: month-to-date
-    // volume across every form on the inbox, and whether a webhook exists at
-    // all. `/f/{id}` is unauthenticated and the form ID is in the page source,
-    // so publishing them here would make an inbox's enquiry rate pollable by
-    // anyone who scraped it. A caller holding an accepted access key has proved
-    // it is the installer; everyone else gets the answer they actually need.
-    const installer = acceptedKey !== undefined;
-    return dryRunSuccess(request, {
-      would_deliver: withinMonth && withinDay,
-      ...(installer
-        ? {
-            delivery:
-              mode === 'email'
-                ? { email: 'would send' }
-                : mode === 'webhook'
-                  ? { webhook: 'would post' }
-                  : { email: 'would send', webhook: 'would post' },
-            ...(quota.limit > 0
-              ? {
-                  quota: {
-                    used: quota.used,
-                    limit: quota.limit,
-                    resets_at: quotaResetsAt(quota.month),
-                    day_used: quota.day_used,
-                    day_limit: dailyLimit(env),
-                  },
-                }
-              : {}),
-          }
-        : {}),
-    });
-  }
-
-  const reservation = await reserveQuota(
-    env,
-    quotaKey,
-    monthlyLimit(env),
-    dailyLimit(env),
-  );
-  if (!reservation.allowed && reservation.reason === 'daily') {
-    throw new ApiError(
-      'daily_allowance_exhausted',
-      'This inbox has reached its daily submission ceiling.',
-      {
-        used: reservation.used,
-        limit: reservation.limit,
-        day: reservation.day,
-      },
-    );
-  }
-  if (!reservation.allowed) {
-    throw new ApiError(
-      'monthly_allowance_exhausted',
-      'This inbox has reached its shared monthly submission allowance.',
-      {
-        used: reservation.used,
-        limit: reservation.limit,
-        resets_at: quotaResetsAt(reservation.month),
-      },
-    );
-  }
-
-  const routeDelivery = route.delivery;
-  const routeDeliveryMode: RouteDeliveryMode = routeDelivery?.mode ?? 'email';
-  const event =
-    routeDeliveryMode !== 'email' && routeDelivery?.webhook
-      ? submissionEvent(route, parsed.fields, {
-          test: parsed.test,
-          replyTo: parsed.replyTo,
-          subject: parsed.subject,
-        })
-      : undefined;
-
-  async function rollback(): Promise<void> {
-    if (reservation.limit > 0) {
-      try {
-        await rollbackQuota(env, quotaKey, reservation.month, reservation.day);
-      } catch {
-        // The delivery failed, so the response remains an error even if rollback
-        // also fails. No form fields are included in logs or error messages.
-      }
-    }
-  }
-
-  let deliveryReport: Record<string, string>;
-  if (routeDeliveryMode === 'webhook' && routeDelivery?.webhook && event) {
-    // Synchronous, at-most-once delivery: on failure the reservation is rolled
-    // back and nothing was delivered, so the request is safe to retry.
-    // Receivers deduplicate on the webhook-id header.
-    const result = await deliverWebhook(routeDelivery.webhook, event, {
-      retryWaitsMs: [1000],
-      timeoutMs: 10_000,
-    });
-    if (!result.ok) {
-      await rollback();
-      throw new ApiError('webhook_delivery_failed', 'Webhook delivery failed');
-    }
-    deliveryReport = { webhook: 'delivered' };
-  } else {
-    try {
-      await sendSubmissionEmail(env, route, parsed.fields, {
-        format: parsed.format,
-        replyTo: parsed.replyTo,
-        subject: parsed.subject,
-        test: parsed.test,
-        testNonce: parsed.testNonce,
-      });
-    } catch (error) {
-      await rollback();
-      if (error instanceof ConfigError) throw error;
-      throw new ApiError('delivery_failed', 'Email delivery failed');
-    }
-    if (routeDeliveryMode === 'both' && routeDelivery?.webhook && event) {
-      // Email is authoritative and already delivered; the webhook is
-      // best-effort in the background — the human inbox is the durable record.
-      ctx.waitUntil(
-        deliverWebhook(routeDelivery.webhook, event, {
-          retryWaitsMs: [1000, 4000],
-          timeoutMs: 10_000,
-        }).catch(() => undefined),
-      );
-      deliveryReport = { email: 'delivered', webhook: 'queued' };
-    } else {
-      deliveryReport = { email: 'delivered' };
-    }
-  }
-
-  // Retirement happens here, on a delivery that actually succeeded, and only
-  // the first time. A key that has proved itself is what retires the keys it
-  // superseded -- so a pipeline that mints a key and then fails to deploy
-  // leaves the live site's key untouched, instead of quietly starting a clock
-  // on it. Steady state costs nothing: `usedAt` is already set.
-  if (acceptedKey && !acceptedKey.usedAt) {
-    ctx.waitUntil(
-      acceptStoredAccessKey(env, formId, acceptedKey.keyId).catch(() => undefined),
-    );
-  }
-
-  // The quota Durable Object decides this, not the count. It claims each mark
-  // once per month, so a rolled-back reservation reaching the same number again
-  // — or two submissions landing together — cannot resend the same warning.
-  if (reservation.warn) {
-    ctx.waitUntil(
-      sendQuotaWarning(env, route, reservation.used, reservation.limit, reservation.month).catch(() => undefined),
-    );
-  }
-
-  return submissionSuccess(request, redirect, {
-    success: true,
-    message: parsed.test ? 'Test submission delivered' : 'Submission delivered',
-    ...(parsed.test ? { test: true, echo: parsed.testNonce ?? null } : {}),
-    delivery: deliveryReport,
-    used: reservation.limit > 0 ? reservation.used : undefined,
-    limit: reservation.limit > 0 ? reservation.limit : undefined,
-  });
 }
 
 function methodNotAllowed(allow: string): Response {

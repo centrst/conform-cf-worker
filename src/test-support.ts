@@ -1,6 +1,7 @@
 import { vi } from 'vitest';
 import { sealToken } from './crypto';
 import type { FormSchema } from './schema';
+import { ROUTE_PAYLOAD_VERSION } from './types';
 import type {
   EmailMessageBuilder,
   Env,
@@ -277,7 +278,7 @@ export async function installRoute(
   const formId = options?.formId ?? TEST_FORM_ID;
   const route: RouteTokenPayload = {
     kind: 'route',
-    version: options?.schema ? 3 : options?.delivery ? 2 : 1,
+    version: ROUTE_PAYLOAD_VERSION,
     ownerId: options?.ownerId ?? 'opaque-owner',
     routeId: formId,
     email: options?.email ?? 'owner@example.com',
