@@ -41,6 +41,12 @@ export default defineConfig({
           name: 'workers',
           include: ['src/**/*.workers.test.ts'],
           restoreMocks: true,
+          // Every assertion here is a real round trip to a real Durable Object
+          // on workerd, and CI is far slower than a laptop: a 40-reservation
+          // concurrency spec that takes 30ms locally has taken 2.6s there. The
+          // 5s default left specs that loop tens of reservations sitting on the
+          // edge, failing on timing rather than on behaviour.
+          testTimeout: 30_000,
         },
       },
     ],
