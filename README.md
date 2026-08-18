@@ -342,8 +342,8 @@ route Durable Object remains because it resolves each short form ID.
 
 ## Centrst hosted deployment
 
-The hosted service uses `wrangler.centrst.toml`, which contains its Worker name
-and Custom Domain but intentionally contains no runtime values. The Custom
+The hosted service uses `wrangler.centrst.toml`, which carries its Worker name,
+Custom Domain and a full `[vars]` block. The Custom
 Domain makes Cloudflare issue and manage the certificate for the multi-level
 `api.conform.centrst.com` hostname. Its Cloudflare Git deploy command is:
 
@@ -351,8 +351,14 @@ Domain makes Cloudflare issue and manage the certificate for the multi-level
 npx wrangler versions upload --config wrangler.centrst.toml
 ```
 
-Runtime values and secrets are managed in the `conform-worker`
-dashboard. Do not use the generic `wrangler.toml` for this deployment.
+Runtime values are declared in that file, not in the dashboard. They used to be
+dashboard-only, and production once came up with no vars at all after a rename —
+which is the failure the file's own comment records. `keep_vars = true` means a
+deploy still preserves anything set out of band, so a dashboard override
+survives; but the toml is what a version rollback restores, so a value changed
+in the dashboard during an incident has to be written back here or the next
+rollback undoes it. Secrets stay dashboard-only. Do not use the generic
+`wrangler.toml` for this deployment.
 
 ### How `main` reaches production
 
@@ -469,7 +475,7 @@ Deploy manually:
 npx wrangler deploy --config wrangler.preview.toml
 ```
 
-CI dry-runs all three configs so drift in any of them fails the pull request.
+CI dry-runs all four configs so drift in any of them fails the pull request.
 
 ## Create a form
 
