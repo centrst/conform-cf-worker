@@ -13,11 +13,17 @@ const INTERNAL_FIELDS = new Set([
   'format',
   '_format',
   '_test',
+  '_dry_run',
   'replyto',
   '_replyto',
 ]);
 
 const TEST_TRUE_VALUES = new Set(['true', '1', 'yes']);
+// Strict, unlike `_test`, which treats any non-empty value as true. `_test`
+// still delivers, so switching it on by accident is loud; a dry run delivers
+// nothing, so `_dry_run=false` silently swallowing a form's submissions is a
+// trap worth closing.
+const DRY_RUN_TRUE_VALUES = new Set(['true', '1', 'yes', 'on']);
 
 export interface ParsedSubmission {
   allFields: SubmissionFields;
@@ -27,6 +33,7 @@ export interface ParsedSubmission {
   format: 'text' | 'json';
   spam: boolean;
   test: boolean;
+  dryRun: boolean;
   testNonce?: string;
   redirect?: string;
 }
@@ -117,11 +124,39 @@ async function parseBody(request: Request, maxBytes: number): Promise<Submission
   );
 }
 
+export interface SubmissionLimits {
+  maxBytes: number;
+  maxFields: number;
+  maxFieldLength: number;
+}
+
+/**
+ * Bounds a body that is within the byte cap but still absurd in shape -- ten
+ * thousand one-character fields, or one field carrying the whole budget. The
+ * byte cap alone lets both through, and both arrive as an unreadable email.
+ */
+function enforceShape(fields: SubmissionFields, limits: SubmissionLimits): void {
+  const names = Object.keys(fields);
+  if (names.length > limits.maxFields) {
+    throw new ApiError('too_many_fields', 'Form submission carries too many fields');
+  }
+  for (const name of names) {
+    const value = fields[name];
+    const length = Array.isArray(value)
+      ? value.reduce((total, entry) => total + entry.length, 0)
+      : value.length;
+    if (length > limits.maxFieldLength) {
+      throw new ApiError('field_too_large', `Field "${name}" is too large`);
+    }
+  }
+}
+
 export async function parseSubmission(
   request: Request,
-  maxBytes: number,
+  limits: SubmissionLimits,
 ): Promise<ParsedSubmission> {
-  const allFields = await parseBody(request, maxBytes);
+  const allFields = await parseBody(request, limits.maxBytes);
+  enforceShape(allFields, limits);
   const fields = Object.create(null) as SubmissionFields;
   for (const [key, value] of Object.entries(allFields)) {
     if (!INTERNAL_FIELDS.has(key)) fields[key] = value;
@@ -139,6 +174,7 @@ export async function parseSubmission(
   const rawFormat =
     valueAsString(allFields._format) ?? valueAsString(allFields.format);
   const rawTest = valueAsString(allFields._test)?.trim();
+  const rawDryRun = valueAsString(allFields._dry_run)?.trim().toLowerCase();
   const rawRedirect =
     valueAsString(allFields._redirect) ?? valueAsString(allFields.redirect);
 
@@ -154,6 +190,7 @@ export async function parseSubmission(
     format: rawFormat?.toLowerCase() === 'json' ? 'json' : 'text',
     spam: Boolean(spamValue?.trim()),
     test: Boolean(rawTest),
+    dryRun: Boolean(rawDryRun && DRY_RUN_TRUE_VALUES.has(rawDryRun)),
     testNonce:
       rawTest && !TEST_TRUE_VALUES.has(rawTest.toLowerCase())
         ? cleanHeader(rawTest, 64)

@@ -58,11 +58,30 @@ encrypted routing destination
 verification status
 Cloudflare destination ID
 creation timestamp
+access-key enforcement flag
 ```
+
+Plus at most two access-key rows, when the route has minted any:
+
+```text
+public key label
+supersession sequence
+HMAC of the key
+creation timestamp
+first-use timestamp
+```
+
+A declared schema, when the form has one, is sealed inside that encrypted
+payload rather than written beside it — field names are the customer's, and the
+boundary below says only the alias is kept in plaintext.
 
 The destination is encrypted with AES-GCM before it is written. The opaque inbox
 ID is an HMAC of the normalized destination email. It lets forms for the same
 inbox share quota without using the email as a database key.
+
+Access keys are stored as HMACs, never as values, so route storage is useless
+to anyone who reads it. A key value exists exactly once, in the response to the
+request that minted it.
 
 The only customer-authored value stored in plaintext is the alias. The
 destination email is not stored in plaintext in the route or quota Durable
@@ -101,6 +120,10 @@ The throttled count is sampled for the same reason. Submissions refused by the
 rate limiter are recorded at most once per form per minute, so the number means
 "minutes in which throttling happened", not "requests refused" — an attack is
 unbounded, and recording one must never scale with it.
+
+Plus one row per active day, holding a UTC date and a count. Days are pruned
+after 35 days. Same shape as the month rows and the same limits on what they can
+say: how many, never who or what.
 
 The Durable Object itself is addressed by the opaque inbox ID.
 
@@ -221,12 +244,30 @@ PUBLIC_URL = "https://forms.example.com"
 SOURCE_URL = "https://github.com/your-org/conform-cf-worker"
 SOURCE_COMMIT = "self-hosted"
 CLOUDFLARE_ACCOUNT_ID = "your-account-id"
+
+# Optional, and worth setting. Each one is a thing this deployment can only
+# tell people about if you tell it.
+OPERATOR_NAME = "Your Org"                     # else llms.txt omits the attribution rather than inheriting ours
+MCP_URL = "https://forms.example.com/mcp"      # else the bundled MCP server works but is undiscoverable
+DOCS_URL = "https://example.com/forms/docs/"   # else discovery omits docs_url and llms.txt drops its docs line
+DAILY_LIMIT = "50"                             # else 20% of MONTHLY_LIMIT, minimum 25
+MAX_FIELDS = "100"
+MAX_FIELD_LENGTH = "20000"
 ```
 
 Replace the example sender, public URL, source URL, and Cloudflare account ID.
 The sender must belong to a domain configured for Cloudflare Email Routing or
-Email Sending. Change the example rate-limit `namespace_id` if that integer is
-already used in your account.
+Email Sending. Change any rate-limit `namespace_id` in `wrangler.toml` that is
+already used in your account — they are account-scoped, not global.
+
+Three more are optional and off unless set:
+
+- `ACCOUNT_LOOKUP_SECRET` — the operator interface for listing routes by
+  verified inbox and granting plans.
+- `PLAN_ENFORCEMENT = "true"` — require a granted plan before a route may
+  declare a schema. Only set this if you are charging for it. It is a separate
+  flag from `ACCOUNT_LOOKUP_SECRET` on purpose: a dashboard is not a till.
+- `QUOTA_IDENTITY_EXCEPTIONS` — see [Quota identity](#quota-identity).
 
 If you manage runtime variables in the Cloudflare dashboard instead, leave
 `[vars]` out of `wrangler.toml`. The committed `keep_vars = true` setting keeps
@@ -440,9 +481,10 @@ as compact text for language models.
 ## MCP server
 
 `mcp/` contains a stateless [Model Context Protocol](https://modelcontextprotocol.io)
-server (Streamable HTTP) that fronts the public API with five tools:
+server (Streamable HTTP) that fronts the public API with six tools:
 `create_form` (idempotent by default), `get_form_status`, `get_install_code`,
-`send_test_submission`, and `get_service_info`. It is implemented directly on
+`check_submission` (a dry run — spends nothing), `send_test_submission` (real
+delivery, one quota unit), and `get_service_info`. It is implemented directly on
 JSON-RPC, so this repository stays at zero runtime dependencies.
 
 Add it to a coding agent:
@@ -553,6 +595,266 @@ curl -X DELETE https://forms.example.com/v1/routes/cfm_… \
 Deletion is a hard delete — the encrypted destination is destroyed and the
 form ID answers 404 afterwards. Routes that are never verified are deleted
 automatically after 30 days.
+
+Creation also returns a `rotation_token`. It mints access keys and can do
+nothing else, which is why it exists separately: it is the credential that goes
+into a CI secret, and a management token in CI means a leaked CI secret deletes
+the form.
+
+## Access keys
+
+A form endpoint is a public URL sitting in your page's source. That is the
+design — an agent that provisions a form posts to it from wherever it runs, and
+there is no browser in that story. It also means a scraper that reads your page
+gets the endpoint, and can post to it forever.
+
+An access key does **not** fix that, and the docs will not pretend otherwise. A
+key inlined into a public page is exactly as public as the endpoint URL beside
+it. What a key buys is that **rotating it is free**:
+
+```sh
+curl -X POST https://forms.example.com/v1/routes/cfm_…/keys \
+  --header 'Authorization: Bearer <rotation_token>'
+```
+
+Without a key, shaking off a bot that holds your URL means destroying the route
+and rebuilding it — new endpoint, every form updated, pipeline touched. With
+one, you mint and redeploy: same endpoint, same route, same inbox.
+
+Run it in CI on every build and the key a scraper harvested goes stale at your
+next deploy, with nobody noticing anything:
+
+```sh
+KEY=$(curl -sX POST https://forms.example.com/v1/routes/$FORM_ID/keys \
+  --header "Authorization: Bearer $CONFORM_ROTATION_TOKEN" | jq -r .key)
+echo "PUBLIC_CONFORM_ACCESS_KEY=$KEY" >> .env
+yarn build && yarn deploy
+```
+
+The value is returned once, at mint. The Worker stores only an HMAC of it, so
+`GET /v1/routes/{form_id}/keys` lists keys by label and state and never returns
+a value. Generated install artifacts carry a `{{CONFORM_ACCESS_KEY}}`
+placeholder for your build to substitute, never a literal key.
+
+### Two keys live, and what retires the old one
+
+Deploys are not atomic, CDNs cache, and visitors hold pages open, so a route
+keeps the current key and the one it superseded.
+
+**The previous key retires when its successor is first accepted on a
+submission — never on a timer.** A timer has a failure mode worth avoiding: CI
+mints a key, the build then fails, the live site is still serving the previous
+key, and it dies two days later with nothing to connect it to. Waiting for the
+successor to actually deliver once makes a failed deploy cost nothing.
+
+Supersession is ordered by a sequence the route object assigns, not by a
+timestamp — two builds can mint inside the same millisecond, and then a clock
+cannot say which key replaced which.
+
+### Enforcement is a separate switch
+
+Minting a key changes nothing on its own. Until `require_key` is on, a missing
+or wrong key still delivers, so you can mint, ship, and confirm before you
+start refusing anything:
+
+```sh
+curl -X POST https://forms.example.com/v1/routes/cfm_…/settings \
+  --header 'Authorization: Bearer <management_token>' \
+  --header 'Content-Type: application/json' \
+  --data '{"require_key": true}'
+```
+
+A route with no keys at all ignores the `access_key` field entirely, so nothing
+about an existing form changes until you opt in.
+
+### What this does not do
+
+Someone maintaining a scraper against your specific site re-harvests after each
+deploy and always holds a current key. Automation on their side beats
+automation on yours. What rotation stops is the commodity case — harvest once,
+replay for months.
+
+If you post from your own backend rather than the browser, the key never enters
+a page and is a real secret. That is the only configuration in which it is one.
+
+## Submission ceilings
+
+Three separate limits, because they bound different things:
+
+| Limit | Default | Bounds |
+| --- | --- | --- |
+| `SUBMISSION_RATE_LIMITER` | 5/min per form | a burst against one endpoint |
+| `SUBMISSION_CLIENT_RATE_LIMITER` | 2/min per client | a single source across every form it found |
+| `DAILY_LIMIT` | 20% of the monthly limit, minimum 25 | how fast a month can be spent |
+
+The per-form ceiling is deliberately not tighter. A shared cap that is too low
+turns two real visitors in the same minute into one lost enquiry, and the owner
+never hears about it.
+
+The day ceiling is the better protection for the monthly allowance than a
+tighter per-minute limit: it bounds the damage without dropping a legitimately
+busy afternoon, and it is the only one of the three that survives a distributed
+source, where a per-client cap does nothing.
+
+`MAX_FIELDS` (default 100) and `MAX_FIELD_LENGTH` (default 20000) bound a body
+that is inside the byte cap but absurd in shape. Refused submissions never
+reserve quota — validation runs before the reservation.
+
+## Proving a form works without sending anything
+
+`_dry_run` runs every check and stops before spending anything:
+
+```sh
+curl -sX POST https://forms.example.com/f/cfm_… \
+  -d 'name=Test&email=test@example.com&message=Hello&_dry_run=true'
+```
+
+```json
+{
+  "success": true,
+  "dry_run": true,
+  "delivered": false,
+  "would_deliver": true,
+  "delivery": { "email": "would send" },
+  "quota": { "used": 12, "limit": 250, "resets_at": "2026-09-01T00:00:00.000Z" },
+  "message": "Dry run — nothing was delivered and no allowance was spent. …"
+}
+```
+
+No email, no webhook, no quota. It checks the route is active, the access key
+matches, the submission matches the declared schema, and the allowance has room
+— and **returns the exact error a real submission would**, so it is the way to
+verify an install without polluting an inbox.
+
+`_test` still exists and is a different thing: it delivers a real email with a
+`[Test]` subject and consumes one quota unit, which is what you want when the
+question is "does mail actually arrive". `_dry_run` answers "would this be
+accepted". If both are set, the dry run wins.
+
+Three deliberate properties:
+
+- **Strict about its value.** `_dry_run=false` submits for real. `_test` treats
+  any non-empty value as true, which is safe because `_test` still delivers —
+  a dry run does not, so a field left in a live form must fail loudly.
+- **Never redirects, never renders a thank-you page.** The HTML result reads
+  *Dry run — nothing was sent*. A `_dry_run` shipped into production announces
+  itself instead of silently swallowing a month of enquiries.
+- **A honeypot hit answers identically.** Reporting it would let anyone use the
+  dry run to find the trap, and not being able to tell is the honeypot's only
+  property.
+
+The honest cost: a dry run makes probing a form cheaper and quieter than
+submitting for real. The submission rate limiter still applies, which bounds it
+to the same rate as a real submission — that is the control that matters.
+
+## Declared shape — conForm+
+
+Free, conForm is a relay: it forwards whatever arrives, because without a
+declaration it cannot know a form's field names, which are required, or what a
+plausible value looks like. Hand it a schema and it becomes a validator.
+
+```json
+{
+  "email": "you@example.com",
+  "alias": "Oak & Orchard reservations",
+  "schema": {
+    "strict": true,
+    "fields": {
+      "check_in":  { "type": "date",    "required": true },
+      "check_out": { "type": "date",    "required": true },
+      "adults":    { "type": "integer", "required": true, "min": 1, "max": 6 },
+      "children":  { "type": "integer", "min": 0, "max": 5 },
+      "name":      { "type": "text",    "required": true, "max_length": 120 },
+      "email":     { "type": "email",   "required": true },
+      "phone":     { "type": "tel" },
+      "note":      { "type": "text",    "max_length": 2000 }
+    }
+  }
+}
+```
+
+Types: `text email tel url integer number date time datetime boolean choice`.
+Per-field constraints: `required`, `multiple`, `min`, `max`, `min_length`,
+`max_length`, `pattern`, `options`.
+
+Pass `schema` at creation, or attach one later with the management token:
+
+```sh
+curl -X POST https://forms.example.com/v1/routes/cfm_…/settings \
+  --header 'Authorization: Bearer <management_token>' \
+  --header 'Content-Type: application/json' \
+  --data '{"schema": {"fields": {"name": {"type": "text", "required": true}}}}'
+```
+
+`{"schema": null}` clears it. Entitlement is checked when a schema is set, not
+on every submission — so validation costs nothing on the delivery path, and a
+schema already attached keeps being enforced if a plan later lapses. Silently
+turning a form's own rules off would be a worse failure than anything they
+prevent.
+
+### Self-hosting
+
+**The plan check is off unless you turn it on.** Everything in this repository
+is MIT and everything works when you run it yourself: a deployment that gated by
+default would refuse this feature to every self-hoster with no way to grant
+themselves the plan that unlocks it. The check is a billing control for whoever
+charges for this, not a lock on the code.
+
+If you do charge, set `PLAN_ENFORCEMENT = "true"` and grant plans through
+`POST /v1/account/plans` (which needs `ACCOUNT_LOOKUP_SECRET`). The two are
+deliberately separate flags — wanting route listings is not the same as selling
+something, and inferring one from the other would gate people out of their own
+install. The default fails open, which costs an operator who forgets some
+revenue on their own service: a mistake they can see, unlike a self-hoster
+hitting a wall they cannot.
+
+### What a rejection looks like
+
+`422 submission_invalid`, with per-field detail, **before any quota is spent**:
+
+```json
+{
+  "success": false,
+  "error": "submission_invalid",
+  "message": "This submission does not match the form.",
+  "retryable": false,
+  "errors": [
+    { "field": "check_in",  "code": "required",      "message": "\"check_in\" is required" },
+    { "field": "check_out", "code": "required",      "message": "\"check_out\" is required" },
+    { "field": "submit",    "code": "unknown_field", "message": "\"submit\" is not a field on this form" }
+  ]
+}
+```
+
+Detail goes to every caller, not just authenticated ones. A form's shape is
+derivable from the page it is installed on, so withholding it protects nothing
+and leaves real integrators debugging blind.
+
+`GET /v1/routes/{form_id}` publishes the schema for the same reason: an agent
+that can read the shape builds a submission that passes first time instead of
+guessing.
+
+### Two details that matter
+
+**Empty counts as absent.** A browser omits a disabled input entirely, so a
+required field arriving as an empty string is a sender that assembled the body
+from your page source rather than from your form. Treating `""` as present
+would let exactly that through.
+
+**`strict` catches the field that is not yours.** Generic spam scripts post
+every input they can scrape plus one of their own. conForm's `_`-prefixed
+fields are always exempt.
+
+### What it does not do
+
+Every constraint is a property of one field. "Checkout must follow checkin" and
+"adults + children within the occupancy cap" span fields, and are a separate
+feature with a separate expression language. Folding them in here would turn a
+schema into a scripting host.
+
+So a schema refuses the spam — empty required dates, a field the form does not
+have — and still accepts a real guest booking eleven people into a property
+permitted for six. That second one is what cross-field rules are for.
 
 ## Quota identity
 

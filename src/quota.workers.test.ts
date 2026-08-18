@@ -31,7 +31,11 @@ interface Reservation {
   limit: number;
   month: string;
   warn?: 'low' | 'full';
+  reason?: 'daily';
+  day?: string;
 }
+
+const DAY = '2026-08-18';
 
 function quotaStub(name: string) {
   return env.QUOTAS.get(env.QUOTAS.idFromName(name));
@@ -57,6 +61,91 @@ async function rollback(name: string, month = MONTH): Promise<void> {
     body: JSON.stringify({ month }),
   });
 }
+
+async function reserveDay(
+  name: string,
+  dailyLimit: number,
+  day = DAY,
+  month = MONTH,
+): Promise<Reservation> {
+  const response = await quotaStub(name).fetch('https://quota.internal/reserve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ limit: LIMIT, month, daily_limit: dailyLimit, day }),
+  });
+  return (await response.json()) as Reservation;
+}
+
+/**
+ * The day ceiling exists to bound a flood: the monthly allowance caps the total
+ * but says nothing about how fast it goes, and at the per-minute rate limit
+ * alone a month drains in under an hour. These specs run the real SQL, because
+ * the ceiling is the SQL.
+ */
+describe('InboxQuota daily ceiling', () => {
+  it('allows exactly the day limit and refuses the one after it', async () => {
+    const inbox = 'day-boundary';
+    expect(await reserveDay(inbox, 2)).toMatchObject({ allowed: true, used: 1 });
+    expect(await reserveDay(inbox, 2)).toMatchObject({ allowed: true, used: 2 });
+
+    const refused = await reserveDay(inbox, 2);
+    expect(refused.allowed).toBe(false);
+    expect(refused.reason).toBe('daily');
+    expect(refused.limit).toBe(2);
+    expect(refused.day).toBe(DAY);
+  });
+
+  it('does not spend the monthly allowance on a day-refused submission', async () => {
+    const inbox = 'day-refusal-is-free';
+    await reserveDay(inbox, 1);
+    await reserveDay(inbox, 1);
+    await reserveDay(inbox, 1);
+
+    // Only the one that was allowed counted. A refusal that still burned the
+    // month would make the ceiling worse than not having one.
+    const nextDay = await reserveDay(inbox, 5, '2026-08-19');
+    expect(nextDay).toMatchObject({ allowed: true, used: 2 });
+  });
+
+  it('starts over on the next day', async () => {
+    const inbox = 'day-rollover';
+    await reserveDay(inbox, 1);
+    expect(await reserveDay(inbox, 1)).toMatchObject({ allowed: false, reason: 'daily' });
+    expect(await reserveDay(inbox, 1, '2026-08-19')).toMatchObject({ allowed: true });
+  });
+
+  it('returns the day counter on rollback, so a failed delivery is not held against it', async () => {
+    const inbox = 'day-rollback';
+    await reserveDay(inbox, 1);
+    await quotaStub(inbox).fetch('https://quota.internal/rollback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ month: MONTH, day: DAY }),
+    });
+
+    expect(await reserveDay(inbox, 1)).toMatchObject({ allowed: true });
+  });
+
+  it('is off when no day limit is passed, so an unmetered deployment is unaffected', async () => {
+    const inbox = 'day-disabled';
+    for (let index = 0; index < 5; index += 1) {
+      expect(await reserve(inbox)).toMatchObject({ allowed: true });
+    }
+  });
+
+  it('still enforces the month when the day ceiling is generous', async () => {
+    const inbox = 'month-still-wins';
+    await reserveDay(inbox, 100, DAY, '2026-09');
+    const response = await quotaStub(inbox).fetch('https://quota.internal/reserve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limit: 1, month: '2026-09', daily_limit: 100, day: DAY }),
+    });
+    const refused = (await response.json()) as Reservation;
+    expect(refused.allowed).toBe(false);
+    expect(refused.reason).toBeUndefined();
+  });
+});
 
 describe('InboxQuota reservation', () => {
   it('counts up from one and reports the configured limit', async () => {

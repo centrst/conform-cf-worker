@@ -64,10 +64,31 @@ name = "SUBMISSION_RATE_LIMITER"
 namespace_id = "17002"
 
 [ratelimits.simple]
-# A human submits a contact form once. Twenty a minute per form leaves room for
-# a genuinely busy endpoint while stopping a bot dead; five a minute per client
-# caps a single source across every form it has found.
-limit = 20
+# Per form. Generous on purpose: a shared cap that is too tight turns two real
+# visitors in the same minute into one lost enquiry, and the owner never hears
+# about it. Five a minute still bounds a flood -- it takes a scraped endpoint
+# from draining a 250 allowance in thirteen minutes to fifty.
+limit = 5
+period = 60
+
+# Per client. A separate binding because a binding carries one limit, which is
+# why the asymmetry described here was never actually in effect: both keys ran
+# against the same counter. A human submits once; two survives a double-click.
+[[ratelimits]]
+name = "SUBMISSION_CLIENT_RATE_LIMITER"
+namespace_id = "17004"
+
+[ratelimits.simple]
+limit = 2
+period = 60
+
+# Key rotation. Sized for CI, which mints once per build.
+[[ratelimits]]
+name = "ROTATION_RATE_LIMITER"
+namespace_id = "17005"
+
+[ratelimits.simple]
+limit = 5
 period = 60
 
 [[ratelimits]]

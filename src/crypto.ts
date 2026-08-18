@@ -1,8 +1,17 @@
 import { parseExceptionList, quotaIdentity } from './email-identity';
 import { ConfigError, TokenError } from './errors';
-import type { ManageTokenPayload, PendingRoutePayload, RouteTokenPayload } from './types';
+import type {
+  ManageTokenPayload,
+  PendingRoutePayload,
+  RotateTokenPayload,
+  RouteTokenPayload,
+} from './types';
 
-type TokenPayload = RouteTokenPayload | PendingRoutePayload | ManageTokenPayload;
+type TokenPayload =
+  | RouteTokenPayload
+  | PendingRoutePayload
+  | ManageTokenPayload
+  | RotateTokenPayload;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -49,6 +58,7 @@ function decodeSecret(secret: string | undefined, name: string): Uint8Array<Arra
 function purposeCode(kind: TokenPayload['kind']): string {
   if (kind === 'route') return 'r';
   if (kind === 'pending') return 'p';
+  if (kind === 'rotate') return 'k';
   return 'm';
 }
 
@@ -56,6 +66,7 @@ function purposeFromCode(code: string): TokenPayload['kind'] {
   if (code === 'r') return 'route';
   if (code === 'p') return 'pending';
   if (code === 'm') return 'manage';
+  if (code === 'k') return 'rotate';
   throw new TokenError('Unsupported conForm token purpose');
 }
 
@@ -200,7 +211,8 @@ export async function openToken<T extends TokenPayload>(
 
   const payload = JSON.parse(decoder.decode(plaintext)) as T;
   const version = payload.version as number;
-  if (payload.kind !== expectedKind || (version !== 1 && version !== 2)) {
+  // Enumerated, not a range: a NaN version satisfies neither `< 1` nor `> 3`.
+  if (payload.kind !== expectedKind || ![1, 2, 3].includes(version)) {
     throw new TokenError('Invalid conForm route token payload');
   }
   return payload;
@@ -217,4 +229,46 @@ export function randomRouteId(): string {
 
 export function isValidFormId(value: string): boolean {
   return /^cfm_[A-HJ-NP-Z2-9]{16}$/u.test(value);
+}
+
+// 32 characters, so a byte maps onto one with `& 31` and no modulo bias.
+// Same unambiguous set as form IDs: these get read off build logs.
+const ACCESS_KEY_ALPHABET = FORM_ID_ALPHABET;
+
+function randomString(length: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  let value = '';
+  for (const byte of bytes) value += ACCESS_KEY_ALPHABET[byte & 31];
+  return value;
+}
+
+/**
+ * A route access key. Public by nature -- it is inlined into the page a
+ * scraper already reads -- so its value is in being cheap to rotate, not in
+ * being secret. A customer posting from their own backend keeps it out of the
+ * page, and there it is a real secret.
+ */
+export function generateAccessKey(): string {
+  return `cfk_${randomString(32)}`;
+}
+
+/** Public label for a key, so a listing can name one without revealing it. */
+export function generateKeyId(): string {
+  return randomString(8);
+}
+
+export function isValidAccessKey(value: string): boolean {
+  return /^cfk_[A-HJ-NP-Z2-9]{32}$/u.test(value);
+}
+
+/**
+ * Keys are stored hashed, so the stored form is useless if route storage is
+ * ever read. Comparison is on HMAC output the caller cannot steer, so a
+ * non-constant-time match leaks nothing about the key.
+ */
+export async function accessKeyHash(
+  key: string,
+  secret: string | undefined,
+): Promise<string> {
+  return hmacId(`key.v1.${key}`, secret);
 }

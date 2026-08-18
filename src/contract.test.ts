@@ -12,6 +12,7 @@ import {
 } from './test-support';
 import type { Env, PendingRoutePayload, StoredRouteRecord } from './types';
 
+const NOW = '2026-08-18T00:00:00.000Z';
 const table: Record<string, ErrorSpec> = ERROR_TABLE;
 const activeCodes = Object.keys(table)
   .filter((code) => !table[code].planned)
@@ -110,6 +111,8 @@ describe('error taxonomy sync', () => {
         '/v1/routes/{formId}',
         '/v1/routes/{formId}/claim',
         '/v1/routes/{formId}/install',
+        '/v1/routes/{formId}/keys',
+        '/v1/routes/{formId}/settings',
         '/f/{formId}',
       ].sort(),
     );
@@ -455,6 +458,163 @@ describe('every active error code is emitted as its documented envelope', () => 
         });
         await installRoute(env, routes);
         return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'x' })), env);
+      },
+    },
+    {
+      code: 'invalid_schema',
+      run: () =>
+        fetchWorker(
+          post(
+            '/v1/routes',
+            JSON.stringify({
+              email: 'owner@example.com',
+              alias: 'Contact',
+              schema: { fields: { name: { type: 'not-a-type' } } },
+            }),
+          ),
+          baseEnv(),
+        ),
+    },
+    {
+      code: 'schema_unavailable',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env: Env = { ...baseEnv({ routes }), PLAN_ENFORCEMENT: 'true' };
+        await installRoute(env, routes);
+        const manage = await sealToken(
+          {
+            kind: 'manage',
+            version: 1,
+            routeId: TEST_FORM_ID,
+            ownerId: 'opaque-owner',
+            issuedAt: Date.now(),
+          },
+          env.ROUTE_TOKEN_SECRET,
+        );
+        return fetchWorker(
+          new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}/settings`, {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${manage}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ schema: { fields: { name: { type: 'text' } } } }),
+          }),
+          env,
+        );
+      },
+    },
+    {
+      code: 'submission_invalid',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes, {
+          schema: { strict: true, fields: { name: { type: 'text', required: true } } },
+        });
+        return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ name: '' })), env);
+      },
+    },
+    {
+      code: 'daily_allowance_exhausted',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({
+          routes,
+          reservation: {
+            allowed: false,
+            reason: 'daily',
+            used: 50,
+            limit: 50,
+            month: '2026-07',
+            day: '2026-07-23',
+          },
+        });
+        await installRoute(env, routes);
+        return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'x' })), env);
+      },
+    },
+    {
+      code: 'too_many_fields',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = { ...baseEnv({ routes }), MAX_FIELDS: '3' };
+        await installRoute(env, routes);
+        return fetchWorker(
+          post(`/f/${TEST_FORM_ID}`, JSON.stringify({ a: '1', b: '2', c: '3', d: '4' })),
+          env,
+        );
+      },
+    },
+    {
+      code: 'field_too_large',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = { ...baseEnv({ routes }), MAX_FIELD_LENGTH: '64' };
+        await installRoute(env, routes);
+        return fetchWorker(
+          post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'x'.repeat(200) })),
+          env,
+        );
+      },
+    },
+    {
+      code: 'access_key_required',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes, {
+          requireKey: true,
+          accessKeys: [{ keyId: 'AAAAAAAA', hash: 'stored-hash', createdAt: NOW }],
+        });
+        return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'x' })), env);
+      },
+    },
+    {
+      code: 'access_key_invalid',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes, {
+          requireKey: true,
+          accessKeys: [{ keyId: 'AAAAAAAA', hash: 'stored-hash', createdAt: NOW }],
+        });
+        return fetchWorker(
+          post(
+            `/f/${TEST_FORM_ID}`,
+            JSON.stringify({ message: 'x', access_key: `cfm_${'A'.repeat(16)}` }),
+          ),
+          env,
+        );
+      },
+    },
+    {
+      code: 'rotation_token_required',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes);
+        return fetchWorker(
+          new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}/keys`, {
+            method: 'POST',
+          }),
+          env,
+        );
+      },
+    },
+    {
+      code: 'rotation_token_invalid',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env = baseEnv({ routes });
+        await installRoute(env, routes);
+        return fetchWorker(
+          new Request(`https://api.conform.test/v1/routes/${TEST_FORM_ID}/keys`, {
+            method: 'POST',
+            headers: { Authorization: 'Bearer cf1.k.not.a-real-token' },
+          }),
+          env,
+        );
       },
     },
     {

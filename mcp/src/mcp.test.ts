@@ -61,6 +61,7 @@ describe('conform MCP server', () => {
       'create_form',
       'get_form_status',
       'get_install_code',
+      'check_submission',
       'send_test_submission',
       'get_service_info',
     ]);

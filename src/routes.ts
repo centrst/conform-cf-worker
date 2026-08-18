@@ -1,4 +1,4 @@
-import type { Env, StoredRouteRecord } from './types';
+import type { Env, RouteAccessKey, StoredRouteRecord } from './types';
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -34,6 +34,15 @@ export class FormRoute implements DurableObject {
         created_at TEXT NOT NULL
       )
     `);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS access_key (
+        key_id TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        used_at TEXT
+      )
+    `);
     const columns = this.sql.exec<{ name: string }>(`PRAGMA table_info(route)`).toArray();
     if (!columns.some((column) => column.name === 'request_hash')) {
       this.sql.exec(`ALTER TABLE route ADD COLUMN request_hash TEXT`);
@@ -41,6 +50,38 @@ export class FormRoute implements DurableObject {
     if (!columns.some((column) => column.name === 'quota_key')) {
       this.sql.exec(`ALTER TABLE route ADD COLUMN quota_key TEXT`);
     }
+    if (!columns.some((column) => column.name === 'require_key')) {
+      this.sql.exec(`ALTER TABLE route ADD COLUMN require_key INTEGER NOT NULL DEFAULT 0`);
+    }
+  }
+
+  /**
+   * Newest first, so the head is the current key and the tail the superseded
+   * one. Ordered by a sequence the object assigns, not by the timestamp: two
+   * builds can mint inside the same millisecond, and then a clock cannot say
+   * which key supersedes which.
+   */
+  private keys(): RouteAccessKey[] {
+    return this.sql
+      .exec<{
+        key_id: string;
+        seq: number;
+        hash: string;
+        created_at: string;
+        used_at: string | null;
+      }>(
+        `SELECT key_id, seq, hash, created_at, used_at
+         FROM access_key
+         ORDER BY seq DESC`,
+      )
+      .toArray()
+      .map((row) => ({
+        keyId: row.key_id,
+        seq: row.seq,
+        hash: row.hash,
+        createdAt: row.created_at,
+        ...(row.used_at ? { usedAt: row.used_at } : {}),
+      }));
   }
 
   private read(): StoredRouteRecord | null {
@@ -55,9 +96,10 @@ export class FormRoute implements DurableObject {
         created_at: string;
         request_hash: string | null;
         quota_key: string | null;
+        require_key: number | null;
       }>(
         `SELECT form_id, alias, owner_id, encrypted_route, status,
-                destination_id, created_at, request_hash, quota_key
+                destination_id, created_at, request_hash, quota_key, require_key
          FROM route
          WHERE singleton = 1`,
       )
@@ -74,6 +116,8 @@ export class FormRoute implements DurableObject {
       createdAt: row.created_at,
       requestHash: row.request_hash ?? undefined,
       quotaKey: row.quota_key ?? undefined,
+      accessKeys: this.keys(),
+      requireKey: row.require_key ? true : undefined,
     };
   }
 
@@ -84,6 +128,7 @@ export class FormRoute implements DurableObject {
     // constructor does not rerun, leaving read() with no route table and
     // turning the documented post-delete 404 into a 500.
     this.sql.exec(`DELETE FROM route WHERE singleton = 1`);
+    this.sql.exec(`DELETE FROM access_key`);
   }
 
   async alarm(): Promise<void> {
@@ -106,8 +151,8 @@ export class FormRoute implements DurableObject {
       const cursor = this.sql.exec(
         `INSERT OR IGNORE INTO route (
           singleton, form_id, alias, owner_id, encrypted_route, status,
-          destination_id, created_at, request_hash, quota_key
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+          destination_id, created_at, request_hash, quota_key, require_key
+        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
         route.formId,
         route.alias,
         route.ownerId,
@@ -117,6 +162,7 @@ export class FormRoute implements DurableObject {
         route.createdAt,
         route.requestHash ?? null,
         route.quotaKey ?? null,
+        route.requireKey ? 1 : 0,
       );
       if (cursor.rowsWritten !== 1) {
         return json({ error: 'Form ID already exists' }, 409);
@@ -146,6 +192,100 @@ export class FormRoute implements DurableObject {
       if (!route) return json({ error: 'Route not found' }, 404);
       await this.destroy();
       return json({ deleted: true });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/keys') {
+      if (!this.read()) return json({ error: 'Route not found' }, 404);
+      return json({ keys: this.keys() });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/keys/mint') {
+      if (!this.read()) return json({ error: 'Route not found' }, 404);
+      const key = (await request.json()) as RouteAccessKey;
+      this.sql.exec(
+        `INSERT INTO access_key (key_id, seq, hash, created_at)
+         SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3 FROM access_key`,
+        key.keyId,
+        key.hash,
+        key.createdAt,
+      );
+      // What must survive a mint is whatever key the live site is serving, and
+      // the object cannot know which that is. Two proxies cover it:
+      //
+      //   - the newest key that has been used. It reached a real visitor, so it
+      //     was live. This is what keeps a failed deploy from evicting the key
+      //     the site is still handing out.
+      //   - failing that, the second-newest key. On a route where nothing has
+      //     been submitted yet there is no evidence to go on, and the key
+      //     before this one is the best guess at what shipped.
+      //
+      // Everything else is a mint some pipeline abandoned, and dropping it
+      // costs nobody a working form.
+      this.sql.exec(
+        `DELETE FROM access_key
+         WHERE key_id NOT IN (
+           SELECT key_id FROM access_key ORDER BY seq DESC LIMIT 1
+         )
+         AND key_id NOT IN (
+           SELECT key_id FROM access_key WHERE used_at IS NOT NULL
+           ORDER BY seq DESC LIMIT 1
+         )
+         AND key_id NOT IN (
+           SELECT key_id FROM access_key
+           WHERE NOT EXISTS (SELECT 1 FROM access_key WHERE used_at IS NOT NULL)
+           ORDER BY seq DESC LIMIT 1 OFFSET 1
+         )`,
+      );
+      return json({ keys: this.keys() }, 201);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/keys/accept') {
+      const body = (await request.json()) as { keyId: string };
+      const rows = this.sql
+        .exec<{ seq: number; used_at: string | null }>(
+          `SELECT seq, used_at FROM access_key WHERE key_id = ?1`,
+          body.keyId,
+        )
+        .toArray();
+      const row = rows[0];
+      if (!row) return json({ accepted: false }, 404);
+      if (row.used_at) return json({ accepted: true, retired: 0 });
+      this.sql.exec(
+        `UPDATE access_key SET used_at = ?2 WHERE key_id = ?1`,
+        body.keyId,
+        new Date().toISOString(),
+      );
+      // A key proving itself is what retires its predecessors -- not a clock.
+      // Keys newer than this one survive: an old key still in a cached page
+      // must not evict the one a deploy just shipped.
+      const retired = this.sql.exec(
+        `DELETE FROM access_key WHERE seq < ?1`,
+        row.seq,
+      ).rowsWritten;
+      return json({ accepted: true, retired });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/settings') {
+      const body = (await request.json()) as {
+        requireKey?: boolean;
+        encryptedRoute?: string;
+      };
+      if (!this.read()) return json({ error: 'Route not found' }, 404);
+      if (body.requireKey !== undefined) {
+        this.sql.exec(
+          `UPDATE route SET require_key = ?1 WHERE singleton = 1`,
+          body.requireKey ? 1 : 0,
+        );
+      }
+      // A schema lives inside the sealed payload, so changing one arrives here
+      // as a replacement payload rather than as a field of its own.
+      if (body.encryptedRoute) {
+        this.sql.exec(
+          `UPDATE route SET encrypted_route = ?1 WHERE singleton = 1`,
+          body.encryptedRoute,
+        );
+      }
+      return json(this.read());
     }
 
     if (request.method === 'GET' && url.pathname === '/owner-routes') {
@@ -223,6 +363,54 @@ export async function activateStoredRoute(
   );
   if (response.status === 404) return null;
   if (!response.ok) throw new Error('Route activation failed');
+  return (await response.json()) as StoredRouteRecord;
+}
+
+export async function mintStoredAccessKey(
+  env: Env,
+  formId: string,
+  key: RouteAccessKey,
+): Promise<RouteAccessKey[] | null> {
+  const response = await routeStub(env, formId).fetch('https://route.internal/keys/mint', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(key),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error('Access key mint failed');
+  return ((await response.json()) as { keys: RouteAccessKey[] }).keys;
+}
+
+/**
+ * Records that a key was accepted on a submission. The first acceptance is
+ * what retires the keys it superseded, so this runs on the delivery path --
+ * but only when the key has not been marked used, so the steady state is a
+ * plain read with no extra write.
+ */
+export async function acceptStoredAccessKey(
+  env: Env,
+  formId: string,
+  keyId: string,
+): Promise<void> {
+  await routeStub(env, formId).fetch('https://route.internal/keys/accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ keyId }),
+  });
+}
+
+export async function updateStoredRouteSettings(
+  env: Env,
+  formId: string,
+  settings: { requireKey?: boolean; encryptedRoute?: string },
+): Promise<StoredRouteRecord | null> {
+  const response = await routeStub(env, formId).fetch('https://route.internal/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error('Route settings update failed');
   return (await response.json()) as StoredRouteRecord;
 }
 

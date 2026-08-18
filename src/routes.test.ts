@@ -12,6 +12,7 @@ interface FakeRow {
   created_at: string;
   request_hash: string | null;
   quota_key: string | null;
+  require_key: number;
 }
 
 function cursor<T extends Record<string, SqlStorageValue>>(
@@ -45,6 +46,7 @@ function durableObjectState() {
           [
             { name: 'request_hash' },
             { name: 'quota_key' },
+            { name: 'require_key' },
           ] as unknown as T[],
         );
       }
@@ -63,6 +65,7 @@ function durableObjectState() {
           created_at: String(params[6]),
           request_hash: params[7] === null ? null : String(params[7]),
           quota_key: params[8] === null ? null : String(params[8]),
+          require_key: Number(params[9] ?? 0),
         };
         return cursor<T>([], 1);
       }
@@ -70,6 +73,9 @@ function durableObjectState() {
         const rowsWritten = row ? 1 : 0;
         row = null;
         return cursor<T>([], rowsWritten);
+      }
+      if (statement.startsWith('DELETE FROM ACCESS_KEY')) {
+        return cursor<T>([], 0);
       }
       throw new Error(`Unexpected SQL in test: ${statement}`);
     },

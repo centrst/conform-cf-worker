@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import spec from '../openapi.json';
+import { discoveryDocument, llmsText } from './discovery';
 import worker from './index';
 import { baseEnv, executionContext } from './test-support';
 
@@ -64,5 +65,39 @@ describe('discovery document', () => {
     expect(text).toContain('Idempotency-Key');
     expect(text).toContain('https://api.conform.test');
     expect(text).toContain('one monthly allowance');
+  });
+});
+
+describe('vendor neutrality', () => {
+  it('does not announce a self-hosted deployment as somebody else’s product', () => {
+    const env = baseEnv();
+    delete env.DOCS_URL;
+    delete env.MCP_URL;
+
+    const text = llmsText(env, 'https://forms.example.com');
+
+    expect(text).not.toContain('Centrst');
+    expect(text).toContain('Form-to-email API.');
+  });
+
+  it('names the operator when one is configured', () => {
+    const text = llmsText(
+      { ...baseEnv(), OPERATOR_NAME: 'Centrst' },
+      'https://forms.example.com',
+    );
+
+    expect(text).toContain('Form-to-email API by Centrst.');
+  });
+
+  it('derives every advertised URL from this deployment', () => {
+    const env = baseEnv();
+    delete env.PUBLIC_URL;
+    delete env.DOCS_URL;
+    delete env.MCP_URL;
+
+    const document = discoveryDocument(env, 'https://forms.example.com');
+
+    expect(document.base_url).toBe('https://forms.example.com');
+    expect(JSON.stringify(document)).not.toContain('centrst.com');
   });
 });

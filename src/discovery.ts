@@ -45,6 +45,26 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
         path: '/v1/routes/{form_id}/claim',
         auth: 'Bearer management_token',
       },
+      declare_schema: {
+        method: 'POST',
+        path: '/v1/routes/{form_id}/settings',
+        auth: 'Bearer management_token',
+      },
+      rotate_access_key: {
+        method: 'POST',
+        path: '/v1/routes/{form_id}/keys',
+        auth: 'Bearer rotation_token',
+      },
+      list_access_keys: {
+        method: 'GET',
+        path: '/v1/routes/{form_id}/keys',
+        auth: 'Bearer rotation_token',
+      },
+      route_settings: {
+        method: 'POST',
+        path: '/v1/routes/{form_id}/settings',
+        auth: 'Bearer management_token',
+      },
       install_code: {
         method: 'GET',
         path: '/v1/routes/{form_id}/install?framework={framework}',
@@ -93,9 +113,13 @@ export function discoveryDocument(env: Env, origin: string): Record<string, unkn
 export function llmsText(env: Env, origin: string): string {
   const base = publicUrl(env, origin);
   const limit = monthlyLimit(env);
+  // "by Centrst" is the hosted service's own claim and belongs only on the
+  // hosted deployment. A self-hoster's llms.txt told agents their origin was
+  // somebody else's product, which is a branding claim they never made.
+  const operator = env.OPERATOR_NAME?.trim();
   return `# conForm
 
-> Form-to-email API by Centrst. One POST creates a permanent form endpoint that
+> Form-to-email API${operator ? ` by ${operator}` : ''}. One POST creates a permanent form endpoint that
 > delivers submissions to a verified inbox. No account, no API key, no
 > submission storage. Open-source MIT engine, self-hostable on Cloudflare
 > Workers.
@@ -109,10 +133,26 @@ Key facts for agents
   delivery starts. Poll GET /v1/routes/{form_id} (next_action tells you exactly
   what to do). The endpoint URL is stable while pending — install the form immediately.
 - Ready-to-install code: GET /v1/routes/{form_id}/install?framework=html|js|react|vue|svelte|astro|nextjs
-- Test delivery without polluting real traffic: include _test=true in a submission;
-  the response echoes test:true as proof. A test response WITHOUT test:true means
-  the submission was spam-filtered — never populate the hidden _gotcha field.
+- Prove a form works WITHOUT sending anything: include _dry_run=true. Every check runs
+  (route active, access key, declared schema, allowance) and nothing is spent — no email,
+  no webhook, no quota. The response is {dry_run:true, delivered:false, would_deliver, quota}.
+  Errors are byte-identical to a real submission's, so this is the cheapest way to verify an install.
+- Test real end-to-end delivery: include _test=true; a real email arrives with a [Test] subject and
+  the response echoes test:true as proof. This DOES consume one quota unit. A test response WITHOUT
+  test:true means the submission was spam-filtered — never populate the hidden _gotcha field.
 - Clean up: DELETE /v1/routes/{form_id} with "Authorization: Bearer <management_token>".
+- Optional declared shape (conForm+): pass "schema" on POST /v1/routes, or POST
+  /v1/routes/{form_id}/settings {"schema": {...}} with the management token. Fields declare
+  type (text|email|tel|url|integer|number|date|time|datetime|boolean|choice), required, min, max,
+  min_length, max_length, pattern, options, multiple. A submission that does not match is refused
+  with 422 submission_invalid and a per-field "errors" array, before any quota is spent.
+  GET /v1/routes/{form_id} publishes the schema — read it and build a submission that passes first time.
+- Optional access keys: POST /v1/routes/{form_id}/keys with "Authorization: Bearer <rotation_token>"
+  mints a key, returned once, sent as the access_key field. Run it in CI on every build so a key
+  scraped from the published page goes stale at the next deploy. The key it replaces stays valid
+  until the new one is first accepted, so a failed deploy breaks nothing. Enforcement is separate:
+  POST /v1/routes/{form_id}/settings {"require_key":true} with the management token.
+  An access key is NOT proof of origin — in a public page it is as public as the endpoint URL.
 - Optional account dashboards can list form metadata by verified inbox through the
   operator-authenticated POST /v1/account/routes interface. Destination plaintext,
   management tokens, and submissions are never returned.

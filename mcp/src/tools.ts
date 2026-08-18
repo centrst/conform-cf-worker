@@ -156,13 +156,64 @@ export const TOOLS: ToolDefinition[] = [
     },
   },
   {
+    name: 'check_submission',
+    title: 'Check a submission without sending it',
+    description:
+      'Runs every check a real submission would — route active, access key, declared schema, ' +
+      'remaining allowance — and stops before spending anything. No email, no webhook, no quota. ' +
+      'Errors are identical to a real submission’s, so this is the cheapest way to prove an ' +
+      'install works. Prefer this over send_test_submission unless the question is specifically ' +
+      'whether mail arrives in the inbox.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        form_id: { type: 'string', description: 'The cfm_… form identifier.' },
+        fields: {
+          type: 'object',
+          description:
+            'Fields to check. Use the form’s real fields — on a route with a declared schema ' +
+            'this is what validates against it.',
+          additionalProperties: true,
+        },
+        access_key: {
+          type: 'string',
+          description: 'The route’s access key, if it has one. Checked exactly as on a real post.',
+        },
+      },
+      required: ['form_id'],
+      additionalProperties: false,
+    },
+    async handler(args, context) {
+      const formId = requireString(args, 'form_id');
+      const fields =
+        args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields)
+          ? (args.fields as Record<string, unknown>)
+          : {
+              name: 'Test',
+              email: 'test@example.com',
+              message: 'conForm install check',
+            };
+      const accessKey = typeof args.access_key === 'string' ? args.access_key : undefined;
+      return apiResult(context, `/f/${encodeURIComponent(formId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          ...fields,
+          ...(accessKey ? { access_key: accessKey } : {}),
+          _dry_run: 'true',
+        }),
+      });
+    },
+  },
+  {
     name: 'send_test_submission',
     title: 'Send a marked test submission',
     description:
       'Sends a _test-marked submission through the form. It is delivered for real with a ' +
       '[Test] subject and consumes one quota unit; the response carries test: true and an ' +
       'echo field as machine-checkable proof. A response without test: true means the ' +
-      'submission was spam-filtered.',
+      'submission was spam-filtered. Use check_submission instead when you only need to ' +
+      'confirm the form is wired correctly — it spends nothing.',
     inputSchema: {
       type: 'object',
       properties: {

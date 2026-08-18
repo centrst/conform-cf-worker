@@ -9,6 +9,13 @@ function currentMonth(): string {
   return new Date().toISOString().slice(0, 7);
 }
 
+function currentDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Days of daily rows to keep. Enough to explain a block, short enough to stay small. */
+const DAILY_RETENTION_DAYS = 35;
+
 /** The count at which the "running low" warning is due. */
 export function lowMark(limit: number): number {
   return Math.max(1, Math.ceil(limit * 0.8));
@@ -59,6 +66,16 @@ export function ensureSchema(sql: SqlStorage): void {
   // single-row table rather than being copied onto every usage row. `usage`
   // keeps recording the limit that applied when each month was counted, which
   // is what makes a past month's numbers still make sense after an upgrade.
+  // The day ceiling is deliberately a separate table rather than a column on
+  // `usage`: it is a rate control that happens to be counted here, not part of
+  // the monthly ledger, and it is pruned while the monthly rows are kept.
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS daily_usage (
+      day TEXT PRIMARY KEY,
+      used INTEGER NOT NULL
+    )
+  `);
+
   sql.exec(`
     CREATE TABLE IF NOT EXISTS plan (
       id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -134,7 +151,9 @@ export class InboxQuota implements DurableObject {
       request.method === 'GET' ? {} : await request.json()
     ) as {
       limit?: number;
+      daily_limit?: number;
       month?: string;
+      day?: string;
       plan?: string;
       monthly_limit?: number | null;
     };
@@ -174,6 +193,30 @@ export class InboxQuota implements DurableObject {
       const limit = this.effectiveLimit(requested);
       if (limit === 0) return json({ allowed: true, used: 0, limit: 0, month });
 
+      // Checked before the monthly row is touched, so a day-capped submission
+      // never has to be un-counted. Safe to read then write without a
+      // transaction: a Durable Object handles one request at a time.
+      const dayLimit = Number.isFinite(body.daily_limit)
+        ? Math.max(0, Math.floor(body.daily_limit ?? 0))
+        : 0;
+      const day = body.day ?? currentDay();
+      if (dayLimit > 0) {
+        const dayRows = this.sql
+          .exec<{ used: number }>('SELECT used FROM daily_usage WHERE day = ?1', day)
+          .toArray();
+        if ((dayRows[0]?.used ?? 0) >= dayLimit) {
+          this.sql.exec('UPDATE usage SET blocked = blocked + 1 WHERE month = ?1', month);
+          return json({
+            allowed: false,
+            reason: 'daily',
+            used: dayRows[0]?.used ?? dayLimit,
+            limit: dayLimit,
+            month,
+            day,
+          });
+        }
+      }
+
       const rows = this.sql
         .exec<{ used: number; limit_count: number }>(
           `INSERT INTO usage (month, used, limit_count)
@@ -208,6 +251,18 @@ export class InboxQuota implements DurableObject {
         });
       }
 
+      if (dayLimit > 0) {
+        this.sql.exec(
+          `INSERT INTO daily_usage (day, used) VALUES (?1, 1)
+           ON CONFLICT(day) DO UPDATE SET used = daily_usage.used + 1`,
+          day,
+        );
+        this.sql.exec(
+          `DELETE FROM daily_usage WHERE day < ?1`,
+          new Date(Date.now() - DAILY_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10),
+        );
+      }
+
       const warn = this.claimWarning(month, rows[0].used, rows[0].limit_count);
       return json({
         allowed: true,
@@ -226,6 +281,10 @@ export class InboxQuota implements DurableObject {
         'UPDATE usage SET used = MAX(0, used - 1), failed = failed + 1 WHERE month = ?1',
         month,
       );
+      this.sql.exec(
+        'UPDATE daily_usage SET used = MAX(0, used - 1) WHERE day = ?1',
+        body.day ?? currentDay(),
+      );
       return json({ rolledBack: true });
     }
 
@@ -238,6 +297,30 @@ export class InboxQuota implements DurableObject {
         month,
       );
       return json({ counted: true });
+    }
+
+    // Reads the allowance without touching it. Only a dry run calls this: the
+    // delivery path reserves, and a reservation already reports the numbers.
+    if (url.pathname === '/peek' && request.method === 'POST') {
+      const limit = this.effectiveLimit(
+        Number.isFinite(body.limit) ? Math.max(0, Math.floor(body.limit ?? 0)) : 0,
+      );
+      const rows = this.sql
+        .exec<{ used: number }>('SELECT used FROM usage WHERE month = ?1', month)
+        .toArray();
+      const dayRows = this.sql
+        .exec<{ used: number }>(
+          'SELECT used FROM daily_usage WHERE day = ?1',
+          body.day ?? currentDay(),
+        )
+        .toArray();
+      return json({
+        used: rows[0]?.used ?? 0,
+        limit,
+        month,
+        day: body.day ?? currentDay(),
+        day_used: dayRows[0]?.used ?? 0,
+      });
     }
 
     if (url.pathname === '/insight' && request.method === 'GET') {
@@ -276,8 +359,15 @@ export class InboxQuota implements DurableObject {
 async function quotaRequest(
   env: Env,
   ownerId: string,
-  path: '/reserve' | '/rollback' | '/plan' | '/throttled',
-  body: { limit?: number; month?: string; plan?: string; monthly_limit?: number | null },
+  path: '/reserve' | '/rollback' | '/plan' | '/throttled' | '/peek',
+  body: {
+    limit?: number;
+    daily_limit?: number;
+    month?: string;
+    day?: string;
+    plan?: string;
+    monthly_limit?: number | null;
+  },
 ): Promise<Response> {
   if (!env.QUOTAS) {
     throw new ConfigError('QUOTAS binding is required when MONTHLY_LIMIT is enabled');
@@ -290,14 +380,43 @@ async function quotaRequest(
   });
 }
 
+export interface QuotaPeek {
+  used: number;
+  limit: number;
+  month: string;
+  day: string;
+  day_used: number;
+}
+
+/** What a reservation would report, without making one. */
+export async function peekQuota(
+  env: Env,
+  ownerId: string,
+  limit: number,
+): Promise<QuotaPeek> {
+  const month = currentMonth();
+  const day = currentDay();
+  if (limit === 0) return { used: 0, limit: 0, month, day, day_used: 0 };
+  const response = await quotaRequest(env, ownerId, '/peek', { limit, month, day });
+  if (!response.ok) throw new Error('Quota read failed');
+  return (await response.json()) as QuotaPeek;
+}
+
 export async function reserveQuota(
   env: Env,
   ownerId: string,
   limit: number,
+  daily = 0,
 ): Promise<QuotaReservation> {
   const month = currentMonth();
+  const day = currentDay();
   if (limit === 0) return { allowed: true, used: 0, limit: 0, month };
-  const response = await quotaRequest(env, ownerId, '/reserve', { limit, month });
+  const response = await quotaRequest(env, ownerId, '/reserve', {
+    limit,
+    month,
+    daily_limit: daily,
+    day,
+  });
   if (!response.ok) throw new Error('Quota reservation failed');
   return (await response.json()) as QuotaReservation;
 }
@@ -386,7 +505,8 @@ export async function rollbackQuota(
   env: Env,
   ownerId: string,
   month: string,
+  day = currentDay(),
 ): Promise<void> {
-  const response = await quotaRequest(env, ownerId, '/rollback', { month });
+  const response = await quotaRequest(env, ownerId, '/rollback', { month, day });
   if (!response.ok) throw new Error('Quota rollback failed');
 }
