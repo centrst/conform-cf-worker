@@ -565,7 +565,7 @@ descriptor and `llms.txt` advertise it.
 
 Self-hosters can do the same, or deploy the MCP server standalone with
 `npx wrangler deploy --config wrangler.mcp.toml`, setting `CONFORM_BASE_URL` to
-their engine's URL. `mcp/server.json` is the MCP registry manifest.
+their engine's URL. `mcp/server.json` is the MCP registry manifest, and it is the one file in this repository a fork must edit before using: it names `com.centrst/conform` in Centrst's reverse-DNS namespace and points `remotes[0].url` at Centrst's hosted endpoint. Nothing serves it, so an unedited copy is inert — but registering one advertises our deployment under our name. Change both fields to yours.
 
 ## Install code
 
