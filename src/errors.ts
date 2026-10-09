@@ -40,6 +40,7 @@ export const ERROR_TABLE = {
   account_lookup_unavailable: { status: 503, retryable: false },
   submission_empty: { status: 400, retryable: false },
   submission_invalid: { status: 422, retryable: false },
+  submission_refused: { status: 422, retryable: false },
   invalid_schema: { status: 400, retryable: false },
   schema_unavailable: { status: 403, retryable: false },
   too_many_fields: { status: 413, retryable: false },

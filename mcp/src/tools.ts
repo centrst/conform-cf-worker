@@ -27,7 +27,7 @@ export const SERVER_INSTRUCTIONS =
   '→ install it → send_test_submission and confirm the response carries test: true → ' +
   'report the result. The endpoint URL is stable while verification is pending, so the ' +
   'form can be installed immediately. Never claim delivery works before status is ' +
-  '"active". A test response without test: true means the submission was spam-filtered — ' +
+  '"active". A test response without test: true means the honeypot caught it — ' +
   'never populate the hidden _gotcha field.';
 
 async function apiResult(
@@ -160,7 +160,7 @@ export const TOOLS: ToolDefinition[] = [
     title: 'Check a submission without sending it',
     description:
       'Runs every check a real submission would — route active, access key, declared schema, ' +
-      'remaining allowance — and stops before spending anything. No email, no webhook, no quota. ' +
+      'the spam screen where the deployment enables it, remaining allowance — and stops before spending anything. No email, no webhook, no quota. ' +
       'Errors are identical to a real submission’s, so this is the cheapest way to prove an ' +
       'install works. Prefer this over send_test_submission unless the question is specifically ' +
       'whether mail arrives in the inbox.',
@@ -212,7 +212,7 @@ export const TOOLS: ToolDefinition[] = [
       'Sends a _test-marked submission through the form. It is delivered for real with a ' +
       '[Test] subject and consumes one quota unit; the response carries test: true and an ' +
       'echo field as machine-checkable proof. A response without test: true means the ' +
-      'submission was spam-filtered. Use check_submission instead when you only need to ' +
+      'honeypot caught it. Use check_submission instead when you only need to ' +
       'confirm the form is wired correctly — it spends nothing.',
     inputSchema: {
       type: 'object',

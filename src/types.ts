@@ -45,6 +45,8 @@ export interface Env {
   SUBMISSION_CLIENT_RATE_LIMITER?: RateLimiter;
   THROTTLE_REPORT_LIMITER?: RateLimiter;
   ROTATION_RATE_LIMITER?: RateLimiter;
+  /** Workers AI. Used only by the spam screen, and only when SPAM_SCREEN is "true". */
+  AI?: Ai;
 
   DELIVERY_MODE?: DeliveryMode;
   MONTHLY_LIMIT?: string;
@@ -76,6 +78,13 @@ export interface Env {
    * this Worker yourself never refuses you a feature you cannot unlock.
    */
   PLAN_ENFORCEMENT?: string;
+  /**
+   * Set to "true", with an `AI` binding, to have Workers AI read each submission
+   * and refuse unsolicited advertising with 422 submission_refused. Off by
+   * default: it is a per-submission inference call, and a self-hoster should
+   * opt into that cost rather than discover it. See src/screen.ts.
+   */
+  SPAM_SCREEN?: string;
 
   ROUTE_TOKEN_SECRET?: string;
   OWNER_HASH_SECRET?: string;

@@ -19,6 +19,8 @@ DELIVERY_MODE = "arbitrary"
 # centrst.com is not onboarded to Email Sending; conform.centrst.com is.
 FROM_EMAIL = "notify@conform.centrst.com"
 FROM_NAME = "ConForm Preview"
+# Same as production, so a release is smoke-tested with the screen in the path.
+SPAM_SCREEN = "true"
 
 [secrets]
 required = [
@@ -29,6 +31,9 @@ required = [
 
 [[send_email]]
 name = "EMAIL"
+
+[ai]
+binding = "AI"
 
 [[ratelimits]]
 name = "REGISTRATION_RATE_LIMITER"

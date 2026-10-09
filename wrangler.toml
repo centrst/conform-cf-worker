@@ -14,6 +14,13 @@ required = ["ROUTE_TOKEN_SECRET", "OWNER_HASH_SECRET"]
 [[send_email]]
 name = "EMAIL"
 
+# Optional spam screen. Uncomment, and set SPAM_SCREEN = "true" in [vars], to
+# have Workers AI refuse unsolicited advertising before it is delivered. Each
+# screened submission is one inference call billed to your account; see
+# "Spam screen" in README.md.
+# [ai]
+# binding = "AI"
+
 # Change any namespace_id below (17001-17005) if it is already used by another
 # rate-limit binding in your Cloudflare account -- the IDs are account-scoped,
 # not global. Counters are ephemeral and receive only opaque HMAC keys, never
