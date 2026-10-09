@@ -19,6 +19,7 @@ import {
 } from './quota';
 import { acceptStoredAccessKey, getStoredRoute, indexStoredRoute } from './routes';
 import { validateSubmission } from './schema';
+import { screenSubmission, spamScreenEnabled } from './screen';
 import { parseSubmission, type ParsedSubmission } from './submission';
 import { refreshVerifiedRoute } from './verification';
 import { deliverWebhook, submissionEvent } from './webhook';
@@ -206,9 +207,9 @@ async function checkSubmission(
   }
 
   // Before the reservation, so a submission refused on its shape costs the
-  // owner nothing. This is the only check that can reject on merits rather
-  // than on fingerprints -- and it exists only because the form said what it
-  // is. Errors name a field, or the cross-field rule that fired, and go to
+  // owner nothing. This and the spam screen below are the only checks that
+  // reject on merits rather than on fingerprints -- and this one exists only
+  // because the form said what it is. Errors name a field, or the cross-field rule that fired, and go to
   // everyone: the schema is derivable from the page an attacker already
   // scraped, so withholding detail protects nothing and leaves real
   // integrators debugging blind.
@@ -219,6 +220,24 @@ async function checkSubmission(
         errors,
       });
     }
+  }
+
+  // Last of the checks, because it is the only one that costs a call: every
+  // fingerprint and shape refusal above is free, and a submission they turn
+  // away never reaches the model. Before the reservation, so a refused advert
+  // spends nothing. Inside the checks rather than after them, so a dry run
+  // answers what a real submission would -- which does let a sender test an
+  // advert against it, but so does the real endpoint, and an operator verifying
+  // the screen needs the dry run to tell the truth.
+  if (
+    spamScreenEnabled(env) &&
+    (await screenSubmission(env, route.formName, parsed.fields, parsed.subject)) === 'spam'
+  ) {
+    throw new ApiError(
+      'submission_refused',
+      'This message looks like unsolicited advertising, so it was not delivered. ' +
+        'If that is wrong, please contact the recipient another way.',
+    );
   }
 
   const quotaKey = record.quotaKey ?? record.ownerId;

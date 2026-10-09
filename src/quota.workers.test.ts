@@ -35,7 +35,12 @@ interface Reservation {
   day?: string;
 }
 
-const DAY = '2026-08-18';
+// Today, not a fixed date. Reserving prunes day rows older than the retention
+// window measured from the real clock, so a literal day goes stale: once it
+// fell outside the window, every row these specs wrote was deleted by the
+// reservation that wrote it, and the day ceiling never fired.
+const DAY = new Date().toISOString().slice(0, 10);
+const NEXT_DAY = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
 
 function quotaStub(name: string) {
   return env.QUOTAS.get(env.QUOTAS.idFromName(name));
@@ -103,7 +108,7 @@ describe('InboxQuota daily ceiling', () => {
 
     // Only the one that was allowed counted. A refusal that still burned the
     // month would make the ceiling worse than not having one.
-    const nextDay = await reserveDay(inbox, 5, '2026-08-19');
+    const nextDay = await reserveDay(inbox, 5, NEXT_DAY);
     expect(nextDay).toMatchObject({ allowed: true, used: 2 });
   });
 
@@ -111,7 +116,7 @@ describe('InboxQuota daily ceiling', () => {
     const inbox = 'day-rollover';
     await reserveDay(inbox, 1);
     expect(await reserveDay(inbox, 1)).toMatchObject({ allowed: false, reason: 'daily' });
-    expect(await reserveDay(inbox, 1, '2026-08-19')).toMatchObject({ allowed: true });
+    expect(await reserveDay(inbox, 1, NEXT_DAY)).toMatchObject({ allowed: true });
   });
 
   it('returns the day counter on rollback, so a failed delivery is not held against it', async () => {

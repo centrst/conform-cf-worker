@@ -261,6 +261,22 @@ export function baseEnv(options?: {
   };
 }
 
+/**
+ * A Workers AI binding for the spam screen. `answer` is what `run` resolves to,
+ * shaped as the model returns it; a function lets a spec throw or stall. The
+ * calls are recorded so a spec can assert the model was never asked.
+ */
+export function screeningAi(answer: unknown | (() => Promise<unknown>)) {
+  const calls: Array<{ model: string; inputs: unknown }> = [];
+  const ai = {
+    async run(model: string, inputs: unknown) {
+      calls.push({ model, inputs });
+      return typeof answer === 'function' ? (answer as () => Promise<unknown>)() : answer;
+    },
+  } as unknown as Ai;
+  return { ai, calls };
+}
+
 export async function installRoute(
   env: Env,
   records: Map<string, StoredRouteRecord>,

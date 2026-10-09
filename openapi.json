@@ -861,7 +861,7 @@
             }
           },
           "422": {
-            "description": "`submission_invalid` — the route declared a schema and this submission does not match it. `errors` carries one entry per field that failed, or per cross-field rule that fired. No quota was spent.",
+            "description": "`submission_invalid` — the route declared a schema and this submission does not match it. `errors` carries one entry per field that failed, or per cross-field rule that fired. `submission_refused` — the deployment screens content (`SPAM_SCREEN`) and read this submission as unsolicited advertising; a sender wrongly refused should reach the recipient another way. No quota was spent in either case.",
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } }
             }
@@ -1084,6 +1084,7 @@
           "account_lookup_unavailable",
           "submission_empty",
           "submission_invalid",
+          "submission_refused",
           "invalid_schema",
           "schema_unavailable",
           "too_many_fields",
@@ -1406,6 +1407,7 @@
     "account_lookup_unavailable": { "status": 503, "retryable": false },
     "submission_empty": { "status": 400, "retryable": false },
     "submission_invalid": { "status": 422, "retryable": false },
+    "submission_refused": { "status": 422, "retryable": false },
     "invalid_schema": { "status": 400, "retryable": false },
     "schema_unavailable": { "status": 403, "retryable": false },
     "too_many_fields": { "status": 413, "retryable": false },

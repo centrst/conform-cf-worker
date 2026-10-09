@@ -51,12 +51,14 @@ The normal flow is:
 3. In the default `verified` mode, Cloudflare emails the owner to verify the
    destination inbox.
 4. The form posts to `https://forms.example.com/f/cfm_…`.
-5. The Worker atomically reserves one unit from that inbox's shared monthly
+5. Where the deployment enables it, Workers AI screens the submission for
+   advertising and refuses it before anything is spent.
+6. The Worker atomically reserves one unit from that inbox's shared monthly
    allowance.
-6. When allowed, the Worker decrypts the destination in memory, turns the
+7. When allowed, the Worker decrypts the destination in memory, turns the
    fields into a plain-text email, optionally attaches `submission.json`, and
    sends it through Cloudflare Email Service.
-7. Conform does not create a submission history.
+8. Conform does not create a submission history.
 
 Every form targeting the same normalized inbox shares one allowance, regardless
 of its alias. A failed email send rolls its quota reservation back. Once the
@@ -151,13 +153,16 @@ The Durable Object itself is addressed by the opaque inbox ID.
 
 ### Data processed elsewhere
 
-| Data | Conform Durable Objects | Cloudflare Email Service | Destination mailbox |
-| --- | --- | --- | --- |
-| Submission fields | Never stored | Processed for Worker execution and delivery | Stored according to the mailbox provider |
-| Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Known to the mailbox provider |
-| Alias | Stored with the route | Included when building the email | Included in the email |
-| Quota | Opaque ID, month, counts (delivered, failed, blocked, throttled), limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent |
-| Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent |
+| Data | Conform Durable Objects | Cloudflare Email Service | Workers AI (`SPAM_SCREEN` only) | Destination mailbox |
+| --- | --- | --- | --- | --- |
+| Submission fields | Never stored | Processed for Worker execution and delivery | Processed to screen for spam, not stored | Stored according to the mailbox provider |
+| Destination email | Encrypted in the form route | Stored as a verified destination in `verified` mode and processed for delivery | Not sent | Known to the mailbox provider |
+| Alias | Stored with the route | Included when building the email | Included as context for the screen | Included in the email |
+| Quota | Opaque ID, month, counts (delivered, failed, blocked, throttled), limit, and whether each allowance warning was sent | Not included in the delivered email | Not sent | Not sent |
+| Account form index | Opaque inbox ID, form IDs and creation timestamps | Not used | Not sent | Not sent |
+
+Workers AI runs in the same Cloudflare account as the Worker, so switching the
+spam screen on adds no processor outside Cloudflare.
 
 No hosted service can honestly promise that its operator is technically unable
 to inspect plaintext processed by infrastructure the operator controls.
@@ -314,13 +319,16 @@ The sender must belong to a domain configured for Cloudflare Email Routing or
 Email Sending. Change any rate-limit `namespace_id` in `wrangler.toml` that is
 already used in your account — they are account-scoped, not global.
 
-Three more are optional and off unless set:
+Four more are optional and off unless set:
 
 - `ACCOUNT_LOOKUP_SECRET` — the operator interface for listing routes by
   verified inbox and granting plans.
 - `PLAN_ENFORCEMENT = "true"` — require a granted plan before a route may
   declare a schema. Only set this if you are charging for it. It is a separate
   flag from `ACCOUNT_LOOKUP_SECRET` on purpose: a dashboard is not a till.
+- `SPAM_SCREEN = "true"`, with the `[ai]` binding uncommented in
+  `wrangler.toml` — have Workers AI refuse unsolicited advertising. One
+  inference call per screened submission. See [Spam screen](#spam-screen).
 - `QUOTA_IDENTITY_EXCEPTIONS` — see [Quota identity](#quota-identity).
 
 If you manage runtime variables in the Cloudflare dashboard instead, leave
@@ -449,6 +457,9 @@ What is worth looking for:
   (`src/index.ts`). A `500 internal_error` is deliberately opaque to the caller,
   so this log line is the *only* record of why. If 500s are reported and this
   line is absent, the failure happened before the handler.
+- `Spam screen unavailable, delivering unscreened:` — Workers AI failed or
+  took over 5 s, and the submission was delivered without being read. The only
+  sign the screen is failing open; it logs the error's class, never its text.
 - `config_incomplete` responses — a missing binding or runtime variable, not a
   caller error. Most likely after an account or dashboard change.
 - `429 monthly_allowance_exhausted` — an inbox hit its allowance. Nothing warns
@@ -781,6 +792,70 @@ The client key is scoped per form. A key of client alone is shared fate across
 tenants: one office NAT would be capped across every customer's forms at once,
 and the third real visitor that minute gets an error nobody hears about.
 
+## Spam screen
+
+Every other check refuses on fingerprints or on shape: a filled honeypot, a
+burst, a field the form does not have. None of them reads what a submission
+says, so a script
+that leaves the honeypot empty and posts one well-formed advert a few hours
+apart is delivered every time. That is what happened to a reservations form in
+October 2026. A captcha-solver advert arrived as a "reservation request"
+several times a day, until the owner stopped trusting the inbox.
+
+With `SPAM_SCREEN = "true"` and an `[ai]` binding named `AI`, each submission
+that passes every other check is read by Workers AI
+(`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, pinned in `src/screen.ts`) before
+any quota is reserved. The model answers `spam`, `genuine` or `unsure`. Only
+`spam` refuses:
+
+```json
+{
+  "success": false,
+  "error": "submission_refused",
+  "message": "This message looks like unsolicited advertising, so it was not delivered. If that is wrong, please contact the recipient another way.",
+  "retryable": false
+}
+```
+
+Four decisions in that, all made to protect real messages:
+
+- **It fails open.** A timeout (5 s), a model error, or an answer that does
+  not parse delivers the submission unscreened. A missed advert costs the owner
+  a delete. A refused booking is a guest who may not try again.
+- **The refusal is loud.** A wrongly refused visitor sees a 422 and a page
+  that says the message was not sent. The honeypot answers 200 and drops
+  silently, which is right for a trap nothing human fills, but a false positive
+  here would then lose real messages with nobody ever finding out.
+- **It runs last.** The honeypot, the rate limits, the access key and the
+  declared schema are free, and whatever they refuse never reaches the model.
+  A route with a schema pays for inference only on submissions shaped like its
+  form.
+- **The dry run answers truthfully.** `_dry_run=true` runs the screen too, so
+  an operator can check it without sending anything. That also lets a sender
+  test an advert against it, but the real endpoint already gives the same
+  answer.
+
+The prompt tells the model that a genuine message can be terse, misspelled,
+in another language or carry a relevant link, and that odd values in other
+fields are not on their own a reason to refuse. Submission text is fenced as
+untrusted and the model is told to ignore instructions inside it; a sender who
+talks it round gets delivered, which is where every submission was before. Calibrated before release
+against the two adverts that prompted it, three other spam shapes (an SEO
+pitch, link spam, a crypto offer) and ten genuine submissions written to be hard,
+including a web agency's customer asking for SEO work: 15/15 correct on every
+run. Typical latency was about 0.5 s, with occasional 2–4 s outliers.
+
+The model sees the form's name, the sender's `_subject` if one was set (it is
+delivered, so it is screened), and every field. A value over 1,500 characters
+is cut to its start and end, and the whole to 6,000, so padding a field with a
+plausible paragraph does not hide an advert placed after it. A sender who fills
+many large fields can still push one out of view; reading every byte would cost
+several calls per submission.
+
+It is off unless both the var and the binding are present, and each screened
+submission is one inference call billed to the deployment's account. Centrst's
+hosted deployment has it on.
+
 ## Proving a form works without sending anything
 
 `_dry_run` runs every check and stops before spending anything:
@@ -803,8 +878,9 @@ curl -sX POST https://forms.example.com/f/cfm_… \
 ```
 
 No email, no webhook, no quota. It checks the route is active, the access key
-matches, and the submission matches the declared schema — and for each of those
-it **returns the exact error a real submission would**, so it is the way to
+matches, the submission matches the declared schema, and, where it is on, that
+the [spam screen](#spam-screen) passes it — and for each of those it **returns
+the exact error a real submission would**, so it is the way to
 verify an install without polluting an inbox.
 
 The allowance is the one exception: a dry run *reports* it rather than refusing
@@ -839,7 +915,8 @@ to the same rate as a real submission — that is the control that matters.
 
 ## Declared shape — conForm+
 
-Free, conForm is a relay: it forwards whatever arrives, because without a
+Free, conForm is a relay: it forwards whatever arrives (bar what an enabled
+[spam screen](#spam-screen) refuses), because without a
 declaration it cannot know a form's field names, which are required, or what a
 plausible value looks like. Hand it a schema and it becomes a validator.
 

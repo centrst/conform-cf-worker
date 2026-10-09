@@ -11,6 +11,7 @@ import { POLL_INTERVAL_SECONDS } from './contract';
 import { publicUrl } from './email';
 import { RULE_LIMITS } from './rules';
 import { FIELD_TYPES } from './schema';
+import { spamScreenEnabled } from './screen';
 import type { Env } from './types';
 
 /**
@@ -156,16 +157,23 @@ Key facts for agents
   what to do). The endpoint URL is stable while pending — install the form immediately.
 - Ready-to-install code: GET /v1/routes/{form_id}/install?framework=html|js|react|vue|svelte|astro|nextjs
 - Prove a form works WITHOUT sending anything: include _dry_run=true. Every check runs
-  (route active, access key, declared schema, allowance) and nothing is spent — no email,
+  (route active, access key, declared schema, ${spamScreenEnabled(env) ? 'spam screen, ' : ''}allowance) and nothing is spent — no email,
   no webhook, no quota. The response is {dry_run:true, delivered:false, would_deliver, quota}.
-  Errors are byte-identical to a real submission's for route state, access key and schema, so this is
+  Errors are byte-identical to a real submission's for route state, access key and schema${spamScreenEnabled(env) ? ' and the spam screen' : ''}, so this is
   the cheapest way to verify an install. The allowance is REPORTED, not refused: a spent allowance
   answers 200 with would_deliver:false where a real submission answers 429. quota and delivery are
   included only when the request carried an accepted access_key.
 - Test real end-to-end delivery: include _test=true; a real email arrives with a [Test] subject and
   the response echoes test:true as proof. This DOES consume one quota unit. A test response WITHOUT
-  test:true means the submission was spam-filtered — never populate the hidden _gotcha field.
-- Clean up: DELETE /v1/routes/{form_id} with "Authorization: Bearer <management_token>".
+  test:true means the honeypot caught it — never populate the hidden _gotcha field.
+${
+  spamScreenEnabled(env)
+    ? `- This deployment screens content: a submission that reads as unsolicited advertising is refused with
+  422 submission_refused before any quota is spent. Write test content the way a visitor would
+  ("Testing the contact form"); _dry_run=true answers the same way a real submission would.
+`
+    : ''
+}- Clean up: DELETE /v1/routes/{form_id} with "Authorization: Bearer <management_token>".
 - Optional declared shape${env.PLAN_ENFORCEMENT === 'true' ? ' (conForm+)' : ''}: pass "schema" on POST /v1/routes, or POST
   /v1/routes/{form_id}/settings {"schema": {...}} with the management token. Fields declare
   type (text|email|tel|url|integer|number|date|time|datetime|boolean|choice), required, min, max,

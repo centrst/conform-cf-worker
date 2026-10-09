@@ -45,6 +45,11 @@ DOCS_URL = "https://centrst.com/conform/docs/"
 # their own install. Unset anywhere else, which fails open rather than refusing
 # a feature nobody can unlock.
 PLAN_ENFORCEMENT = "true"
+# Workers AI reads each submission that passed every other check and refuses
+# unsolicited advertising with 422 submission_refused (src/screen.ts). Turned
+# on after XEvil captcha-solver spam made the Oak & Orchard reservations inbox
+# unusable, October 2026. Fails open: a model error or timeout delivers.
+SPAM_SCREEN = "true"
 
 [secrets]
 required = [
@@ -63,6 +68,11 @@ custom_domain = true
 
 [[send_email]]
 name = "EMAIL"
+
+# The spam screen's model. Same account as everything else here, so turning it
+# on adds no new processor of submission fields.
+[ai]
+binding = "AI"
 
 [[ratelimits]]
 name = "REGISTRATION_RATE_LIMITER"

@@ -9,6 +9,7 @@ import {
   baseEnv,
   executionContext,
   installRoute,
+  screeningAi,
   verifiedDestinationFetch,
 } from './test-support';
 import type { Env, PendingRoutePayload, StoredRouteRecord } from './types';
@@ -555,6 +556,19 @@ describe('every active error code is emitted as its documented envelope', () => 
           schema: { strict: true, fields: { name: { type: 'text', required: true } } },
         });
         return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ name: '' })), env);
+      },
+    },
+    {
+      code: 'submission_refused',
+      run: async () => {
+        const routes = new Map<string, StoredRouteRecord>();
+        const env: Env = {
+          ...baseEnv({ routes }),
+          SPAM_SCREEN: 'true',
+          AI: screeningAi({ response: { verdict: 'spam' } }).ai,
+        };
+        await installRoute(env, routes);
+        return fetchWorker(post(`/f/${TEST_FORM_ID}`, JSON.stringify({ message: 'Buy XEvil' })), env);
       },
     },
     {
