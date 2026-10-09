@@ -7,6 +7,9 @@ declare global {
   }
 }
 
+// Today, not a fixed date: see DAY in quota.workers.test.ts.
+const TODAY = new Date().toISOString().slice(0, 10);
+
 const stub = (name: string) => env.QUOTAS.get(env.QUOTAS.idFromName(name));
 
 async function setPlan(inbox: string, plan: string, monthly: number | null) {
@@ -47,7 +50,7 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 60; index += 1) {
-      if ((await reserve(inbox, 250, undefined, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, undefined, TODAY)).allowed) delivered += 1;
     }
 
     // A fifth of 10,000, not a fifth of the deployment's own 250.
@@ -59,7 +62,7 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 60; index += 1) {
-      if ((await reserve(inbox, 250, undefined, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, undefined, TODAY)).allowed) delivered += 1;
     }
 
     expect(delivered).toBe(50);
@@ -70,7 +73,7 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 60; index += 1) {
-      if ((await reserve(inbox, 250, 0, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, 0, TODAY)).allowed) delivered += 1;
     }
 
     // Collapsing "unset" and "zero" turned DAILY_LIMIT="0" into a derived cap
@@ -84,7 +87,7 @@ describe('a granted plan and the daily ceiling', () => {
 
     let delivered = 0;
     for (let index = 0; index < 20; index += 1) {
-      if ((await reserve(inbox, 250, 10, '2026-08-18')).allowed) delivered += 1;
+      if ((await reserve(inbox, 250, 10, TODAY)).allowed) delivered += 1;
     }
 
     expect(delivered).toBe(10);
@@ -97,7 +100,7 @@ describe('a granted plan and the daily ceiling', () => {
     const response = await stub(inbox).fetch('https://quota.internal/peek', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ limit: 250, month: '2026-08', day: '2026-08-18' }),
+      body: JSON.stringify({ limit: 250, month: '2026-08', day: TODAY }),
     });
     const peek = (await response.json()) as { limit: number; day_limit: number };
 
