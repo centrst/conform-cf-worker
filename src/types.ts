@@ -85,6 +85,12 @@ export interface Env {
    * opt into that cost rather than discover it. See src/screen.ts.
    */
   SPAM_SCREEN?: string;
+  /**
+   * Set to "true" to drop a submission the schema or the spam screen refuses:
+   * no email, a log line saying so, and the same success answer the honeypot
+   * gives, so the sender cannot tell it was refused or learn which check did it.
+   */
+  DROP_REFUSED?: string;
 
   ROUTE_TOKEN_SECRET?: string;
   OWNER_HASH_SECRET?: string;

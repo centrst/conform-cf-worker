@@ -56,11 +56,27 @@ interface CheckedSubmission {
   parsed: ParsedSubmission;
   redirect?: string;
   /**
-   * Absent means the honeypot fired: no route was looked up, and the caller
-   * must not be able to tell. Every answer below is built from this one shape
+   * Absent means the honeypot fired, or a refusal was dropped (DROP_REFUSED),
+   * and the caller must not be able to tell. Every answer below is built from this one shape
    * so that a trapped response cannot grow a field a clean one lacks.
    */
   route?: ResolvedRoute;
+}
+
+/**
+ * Whether a refused submission is dropped rather than refused out loud. Logs
+ * the drop -- the form and which check refused it, never a field -- so the
+ * owner's missing email has a record somewhere.
+ */
+function dropRefusal(
+  env: Env,
+  formId: string,
+  reason: 'schema' | 'spam',
+  dryRun: boolean,
+): boolean {
+  if (env.DROP_REFUSED !== 'true') return false;
+  console.log('Submission dropped:', JSON.stringify({ form_id: formId, reason, dry_run: dryRun }));
+  return true;
 }
 
 function validatedRedirect(value: string): string {
@@ -216,6 +232,7 @@ async function checkSubmission(
   if (route.schema) {
     const errors = validateSubmission(route.schema, parsed.fields);
     if (errors.length > 0) {
+      if (dropRefusal(env, formId, 'schema', parsed.dryRun)) return { parsed, redirect };
       throw new ApiError('submission_invalid', 'This submission does not match the form.', {
         errors,
       });
@@ -233,6 +250,7 @@ async function checkSubmission(
     spamScreenEnabled(env) &&
     (await screenSubmission(env, route.formName, parsed.fields, parsed.subject)) === 'spam'
   ) {
+    if (dropRefusal(env, formId, 'spam', parsed.dryRun)) return { parsed, redirect };
     throw new ApiError(
       'submission_refused',
       'This message looks like unsolicited advertising, so it was not delivered. ' +
@@ -452,6 +470,17 @@ async function deliverSubmission(
     ctx.waitUntil(
       sendQuotaWarning(env, route, reservation.used, reservation.limit, reservation.month).catch(() => undefined),
     );
+  }
+
+  // With drops on, a delivery has to answer exactly as a drop does, or the
+  // difference between the two bodies tells a sender which submissions were
+  // refused. Only a caller holding an accepted access key -- the installer --
+  // gets the detail, test echo included.
+  if (env.DROP_REFUSED === 'true' && !resolved.acceptedKey) {
+    return submissionSuccess(request, redirect, {
+      success: true,
+      message: 'Submission received',
+    });
   }
 
   return submissionSuccess(request, redirect, {
