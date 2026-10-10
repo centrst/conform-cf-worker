@@ -139,6 +139,10 @@ export function llmsText(env: Env, origin: string): string {
   // hosted deployment. A self-hoster's llms.txt told agents their origin was
   // somebody else's product, which is a branding claim they never made.
   const operator = env.OPERATOR_NAME?.trim();
+  // With drops on, a refusal answers as a delivery does, so nothing here may
+  // promise a 422 or announce which checks exist.
+  const dropping = env.DROP_REFUSED === 'true';
+  const screening = spamScreenEnabled(env) && !dropping;
   return `# conForm
 
 > Form-to-email API${operator ? ` by ${operator}` : ''}. One POST creates a permanent form endpoint that
@@ -157,17 +161,24 @@ Key facts for agents
   what to do). The endpoint URL is stable while pending — install the form immediately.
 - Ready-to-install code: GET /v1/routes/{form_id}/install?framework=html|js|react|vue|svelte|astro|nextjs
 - Prove a form works WITHOUT sending anything: include _dry_run=true. Every check runs
-  (route active, access key, declared schema, ${spamScreenEnabled(env) ? 'spam screen, ' : ''}allowance) and nothing is spent — no email,
+  (route active, access key, declared schema, ${screening ? 'spam screen, ' : ''}allowance) and nothing is spent — no email,
   no webhook, no quota. The response is {dry_run:true, delivered:false, would_deliver, quota}.
-  Errors are byte-identical to a real submission's for route state, access key and schema${spamScreenEnabled(env) ? ' and the spam screen' : ''}, so this is
+  Errors are byte-identical to a real submission's for route state, access key${dropping ? '' : ' and schema'}${screening ? ' and the spam screen' : ''}, so this is
   the cheapest way to verify an install. The allowance is REPORTED, not refused: a spent allowance
   answers 200 with would_deliver:false where a real submission answers 429. quota and delivery are
   included only when the request carried an accepted access_key.
 - Test real end-to-end delivery: include _test=true; a real email arrives with a [Test] subject and
-  the response echoes test:true as proof. This DOES consume one quota unit. A test response WITHOUT
-  test:true means the honeypot caught it — never populate the hidden _gotcha field.
 ${
-  spamScreenEnabled(env)
+  dropping
+    ? `  the response echoes test:true as proof only to a request carrying an accepted access_key; every other
+  answer is {success:true, message:"Submission received"}. This DOES consume one quota unit. Never populate
+  the hidden _gotcha field.
+`
+    : `  the response echoes test:true as proof. This DOES consume one quota unit. A test response WITHOUT
+  test:true means the honeypot caught it — never populate the hidden _gotcha field.
+`
+}${
+  screening
     ? `- This deployment screens content: a submission that reads as unsolicited advertising is refused with
   422 submission_refused before any quota is spent. Write test content the way a visitor would
   ("Testing the contact form"); _dry_run=true answers the same way a real submission would.
@@ -177,11 +188,15 @@ ${
 - Optional declared shape${env.PLAN_ENFORCEMENT === 'true' ? ' (conForm+)' : ''}: pass "schema" on POST /v1/routes, or POST
   /v1/routes/{form_id}/settings {"schema": {...}} with the management token. Fields declare
   type (text|email|tel|url|integer|number|date|time|datetime|boolean|choice), required, min, max,
-  min_length, max_length, pattern, options, multiple. A submission that does not match is refused
-  with 422 submission_invalid and a per-field "errors" array, before any quota is spent.
+  min_length, max_length, pattern, options, multiple. ${
+    dropping
+      ? `A submission that does not match is not delivered.`
+      : `A submission that does not match is refused
+  with 422 submission_invalid and a per-field "errors" array, before any quota is spent.`
+  }
   GET /v1/routes/{form_id} publishes the schema — read it and build a submission that passes first time.
 - Cross-field rules${env.PLAN_ENFORCEMENT === 'true' ? ' (conForm+)' : ''}: "rules": [{"when":"adults + children > 6","reject":"Permitted for 6 guests."}].
-  A rule fires when "when" is true and refuses the submission with that message. The expression language is
+  A rule fires when "when" is true and ${dropping ? 'the submission is not delivered' : 'refuses the submission with that message'}. The expression language is
   field names, numbers, strings, + - * /, > >= < <= == !=, && || !, parentheses, and one function present(field).
   No string functions, no regex, no loops, no property access, no true/false literals, and comparisons do not chain.
   Every identifier must be a declared field and every operand must be the right type, checked when the schema is
