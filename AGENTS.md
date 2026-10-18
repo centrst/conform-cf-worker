@@ -5,9 +5,9 @@ Open-source Cloudflare Worker for Conform form-to-email delivery.
 ## Commands
 
 ```sh
-corepack yarn install
-corepack yarn typecheck
-corepack yarn test
+pnpm install
+pnpm typecheck
+pnpm test
 npx wrangler deploy --dry-run
 ```
 

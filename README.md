@@ -258,14 +258,15 @@ the grant is revoked.
 
 Prerequisites:
 
-- Node.js 20 or newer with Corepack
+- Node.js 22 or newer
+- pnpm 12 (`npm install -g pnpm@12`)
 - A Cloudflare account
 - A domain on Cloudflare DNS
 
 ```sh
 git clone https://github.com/centrst/conform-cf-worker.git
 cd conform-cf-worker
-corepack yarn install
+pnpm install
 ```
 
 Generate two independent 32-byte secrets:
@@ -338,7 +339,7 @@ those dashboard values intact on later deploys.
 Deploy:
 
 ```sh
-corepack yarn verify
+pnpm verify
 npx wrangler deploy
 ```
 
@@ -701,7 +702,7 @@ next deploy, with nobody noticing anything:
 KEY=$(curl -fsX POST "https://forms.example.com/v1/routes/$FORM_ID/keys" \
   --header "Authorization: Bearer $CONFORM_ROTATION_TOKEN" | jq -er .key) || exit 1
 echo "PUBLIC_CONFORM_ACCESS_KEY=$KEY" >> .env
-yarn build && yarn deploy
+pnpm build && pnpm run deploy
 ```
 
 The value is returned once, at mint. The Worker stores only an HMAC of it, so
@@ -1190,7 +1191,7 @@ change where mail goes.
 
 If two genuinely distinct mailboxes are ever merged by these rules (for
 example a corporate system where `dev+ops@` is a real mailbox), the operator
-can exempt the exact address: `yarn hash-email dev+ops@corp.example` prints an
+can exempt the exact address: `pnpm hash-email dev+ops@corp.example` prints an
 opaque hash to add to the `QUOTA_IDENTITY_EXCEPTIONS` var — no plaintext
 address ever appears in configuration. The exemption applies to routes created
 after the change.
@@ -1238,8 +1239,8 @@ During migration:
 ## Development
 
 ```sh
-corepack yarn typecheck
-corepack yarn test
+pnpm typecheck
+pnpm test
 npx wrangler deploy --dry-run
 ```
 

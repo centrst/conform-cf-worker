@@ -13,14 +13,15 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v6.1.0
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: corepack enable
-      - run: yarn install --immutable
-      - run: yarn typecheck
-      - run: yarn test
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
       - run: npx wrangler deploy --dry-run
       - run: npx wrangler deploy --dry-run --config wrangler.centrst.toml
       - run: npx wrangler deploy --dry-run --config wrangler.preview.toml
