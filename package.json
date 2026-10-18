@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "verify": "yarn typecheck && yarn test && wrangler deploy --dry-run",
+    "verify": "pnpm typecheck && pnpm test && wrangler deploy --dry-run",
     "hash-email": "node scripts/hash-email.mjs"
   },
   "keywords": [
@@ -20,7 +20,7 @@
     "privacy"
   ],
   "license": "FSL-1.1-ALv2",
-  "packageManager": "yarn@4.5.0",
+  "packageManager": "pnpm@12.14.0",
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.21.3",
     "@cloudflare/workers-types": "^4.20260113.0",

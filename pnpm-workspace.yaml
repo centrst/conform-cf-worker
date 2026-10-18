@@ -1,0 +1,5 @@
+# pnpm 10+ refuses to run dependency install scripts unless allowed here.
+# esbuild and workerd fetch their platform binary in postinstall.
+allowBuilds:
+  esbuild: true
+  workerd: true
